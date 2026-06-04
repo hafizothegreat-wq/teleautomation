@@ -2,3 +2,4 @@ undetected-chromedriver
 selenium
 google-cloud-firestore
 python-dotenv
+webdriver-manager

