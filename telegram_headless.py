@@ -74,16 +74,22 @@ class TelegramAutomation:
         self.setup_driver()
         self.current_status = "Ready"
         self.phone_number = None
-        
+
     # ...existing code...
     def setup_driver(self):
         """Configure and initialize the WebDriver"""
         print("[LOG] Setting up WebDriver...")
         
         def create_chrome_options():
-            """Create a fresh ChromeOptions object with all settings"""
+            """Create a fresh ChromeOptions object with all settings.
+            Respect `HEADLESS` environment variable (default '1'). Set `HEADLESS=0` or 'false' to run headful.
+            """
             opts = uc.ChromeOptions()
-            opts.add_argument('--headless=new')  # Use new headless mode for better compatibility
+            headless_env = os.environ.get('HEADLESS', '1').strip().lower()
+            if headless_env not in ('0', 'false', 'no', 'off'):
+                opts.add_argument('--headless=new')  # Use new headless mode for better compatibility
+            else:
+                print("[LOG] HEADLESS env set to false; running Chrome in headful mode")
             opts.add_argument('--disable-gpu')
             opts.add_argument('--no-sandbox')
             opts.add_argument('--disable-dev-shm-usage')
