@@ -23,6 +23,8 @@ import subprocess
 import shutil
 import re
 import signal
+import zipfile
+import urllib.request
 
 from render_logging import setup_logging, log_startup_banner
 
@@ -55,6 +57,155 @@ QUEUED_TTL = int(os.environ.get('QUEUED_TTL', 7200))
 
 ADMIN_USER = os.environ.get('ADMIN_USER')
 ADMIN_PASS = os.environ.get('ADMIN_PASS')
+
+# ---------------------------------------------------------------------------
+# Chrome provisioning
+# ---------------------------------------------------------------------------
+# Render's *native* Python runtime ships no system Chrome and does not run
+# build.sh automatically. undetected_chromedriver 3.5.5 then tries to set
+# `options.binary_location = None`, which modern selenium rejects with
+# "Binary Location Must be a String". We therefore guarantee a usable Chrome
+# (downloading Chrome for Testing if needed) and always pass an explicit path.
+HERE = os.path.dirname(os.path.abspath(__file__))
+CHROME_INSTALL_DIR = os.environ.get('CHROME_INSTALL_DIR', os.path.join(HERE, '.chrome'))
+AUTO_INSTALL_CHROME = os.environ.get('AUTO_INSTALL_CHROME', '1').strip().lower() not in ('0', 'false', 'no', 'off')
+
+_chrome_lock = threading.Lock()
+_chrome_cache = None  # (chrome_path, chromedriver_path) once resolved
+
+
+def _chrome_candidates():
+    """Ordered candidate paths to a Chrome/Chromium executable."""
+    candidates = []
+    env_path = os.environ.get('CHROME_PATH')
+    if env_path:
+        candidates.append(env_path)
+    candidates.append(os.path.join(CHROME_INSTALL_DIR, 'chrome-linux64', 'chrome'))
+    for name in ('google-chrome-stable', 'google-chrome', 'chromium-browser', 'chromium', 'chrome'):
+        found = shutil.which(name)
+        if found:
+            candidates.append(found)
+    candidates += [
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chromium',
+        '/opt/google/chrome/chrome',
+    ]
+    return candidates
+
+
+def find_chrome_binary():
+    """Return an absolute path to a runnable Chrome/Chromium binary, or None."""
+    for path in _chrome_candidates():
+        try:
+            if path and os.path.isfile(path) and os.access(path, os.X_OK):
+                return os.path.abspath(path)
+        except Exception:
+            continue
+    return None
+
+
+def _prepend_bundled_libs():
+    """Add shared libraries unpacked next to Chrome (see build.sh) to
+    LD_LIBRARY_PATH so the browser finds libnss3/libgbm/etc."""
+    libs = os.path.join(CHROME_INSTALL_DIR, 'libs')
+    if not os.path.isdir(libs):
+        return
+    so_dirs = []
+    for root, _dirs, files in os.walk(libs):
+        if any(f.endswith('.so') or '.so.' in f for f in files):
+            so_dirs.append(root)
+    if not so_dirs:
+        return
+    current = os.environ.get('LD_LIBRARY_PATH', '')
+    os.environ['LD_LIBRARY_PATH'] = os.pathsep.join(sorted(so_dirs) + ([current] if current else []))
+    log.info(f"LD_LIBRARY_PATH now includes {len(so_dirs)} bundled lib dir(s)")
+
+
+def install_chrome_for_testing():
+    """Download Chrome for Testing + its ChromeDriver into CHROME_INSTALL_DIR."""
+    try:
+        log.info("No Chrome binary found; downloading Chrome for Testing (first run only, ~150 MB)...")
+        meta_url = ("https://googlechromelabs.github.io/chrome-for-testing/"
+                    "last-known-good-versions-with-downloads.json")
+        with urllib.request.urlopen(meta_url, timeout=60) as resp:
+            meta = json.load(resp)
+        version = meta['channels']['Stable']['version']
+        log.info(f"Chrome for Testing stable version: {version}")
+        base = f"https://storage.googleapis.com/chrome-for-testing-public/{version}/linux64"
+        os.makedirs(CHROME_INSTALL_DIR, exist_ok=True)
+        for archive in ('chrome-linux64.zip', 'chromedriver-linux64.zip'):
+            dest = os.path.join(CHROME_INSTALL_DIR, archive)
+            urllib.request.urlretrieve(f"{base}/{archive}", dest)
+            with zipfile.ZipFile(dest) as zf:
+                zf.extractall(CHROME_INSTALL_DIR)
+            os.remove(dest)
+        chrome = os.path.join(CHROME_INSTALL_DIR, 'chrome-linux64', 'chrome')
+        driver = os.path.join(CHROME_INSTALL_DIR, 'chromedriver-linux64', 'chromedriver')
+        for exe in (chrome, driver):
+            if os.path.exists(exe):
+                os.chmod(exe, 0o755)
+        log.info(f"Chrome for Testing ready at {chrome}")
+        return (chrome if os.path.exists(chrome) else None,
+                driver if os.path.exists(driver) else None)
+    except Exception as e:
+        log.error(f"Failed to install Chrome for Testing: {e}")
+        return (None, None)
+
+
+def ensure_chrome():
+    """Return (chrome_path, chromedriver_path), installing Chrome if needed.
+
+    Cached so concurrent callers reuse the same result and download only once.
+    """
+    global _chrome_cache
+    with _chrome_lock:
+        if _chrome_cache is not None:
+            return _chrome_cache
+        _prepend_bundled_libs()
+        chrome = find_chrome_binary()
+        bundled_driver = os.path.join(CHROME_INSTALL_DIR, 'chromedriver-linux64', 'chromedriver')
+        driver = bundled_driver if (os.path.isfile(bundled_driver) and os.access(bundled_driver, os.X_OK)) else None
+        if not chrome and AUTO_INSTALL_CHROME:
+            chrome, driver = install_chrome_for_testing()
+        if chrome:
+            log.info(f"Using Chrome binary: {chrome}" + (f" | driver: {driver}" if driver else ""))
+        else:
+            log.error("No Chrome/Chromium binary available (set CHROME_PATH or leave AUTO_INSTALL_CHROME enabled)")
+        _chrome_cache = (chrome, driver)
+        return _chrome_cache
+
+
+def _log_browser_lib_status():
+    """Best-effort check that Chrome's shared libraries are present.
+
+    Chrome for Testing does not bundle libnss3/libgbm/... . They come from the
+    base image (the Dockerfile) or from build.sh, which unpacks the .deb files
+    into CHROME_INSTALL_DIR/libs and extends LD_LIBRARY_PATH.
+    """
+    key_libs = ('nss3', 'nspr4', 'gbm', 'xkbcommon', 'asound', 'atk-1.0', 'cups')
+    try:
+        import ctypes.util
+    except Exception:
+        return
+    missing = []
+    for lib in key_libs:
+        try:
+            if ctypes.util.find_library(lib) is None:
+                missing.append(lib)
+        except Exception:
+            pass
+    if missing:
+        log.warning(
+            "Some Chrome shared libraries may be missing: %s. "
+            "Use the Dockerfile, or set the Render build command to "
+            "'pip install -r requirements.txt && bash build.sh' so they are unpacked.",
+            ", ".join(missing),
+        )
+    else:
+        log.info("Chrome shared libraries look present")
+
 
 # Firestore initialization (unchanged)
 firestore_db = None
@@ -106,7 +257,7 @@ class TelegramAutomation:
             opts.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
             return opts
         
-        def detect_chrome_major_version():
+        def detect_chrome_major_version(extra_paths=None):
             """Detect installed Chrome/Chromium major version (returns int or None)"""
             # Respect explicit env overrides first
             env_ver = os.environ.get('CHROME_MAJOR') or os.environ.get('CHROME_VERSION') or os.environ.get('CHROME_MAIN_VERSION')
@@ -120,6 +271,8 @@ class TelegramAutomation:
 
             chrome_path = os.environ.get('CHROME_PATH')
             candidates = []
+            if extra_paths:
+                candidates.extend([p for p in extra_paths if p])
             if chrome_path:
                 candidates.append(chrome_path)
             candidates.extend(['google-chrome-stable', 'google-chrome', 'chromium-browser', 'chromium', 'chrome'])
@@ -138,32 +291,41 @@ class TelegramAutomation:
                     continue
             return None
 
-        try:
-            # Use undetected_chromedriver without explicit path to let it auto-detect and download matching version
-            log.info("Initializing Chrome with undetected_chromedriver (auto version detection)...")
-            log.info("This may take a moment while downloading the matching ChromeDriver...")
-            chrome_options = create_chrome_options()
-            # Allow specifying explicit Chrome binary path via env var
-            chrome_path = os.environ.get('CHROME_PATH')
-            if chrome_path:
-                try:
-                    chrome_options.binary_location = chrome_path
-                    log.info(f"Using CHROME_PATH: {chrome_path}")
-                except Exception:
-                    pass
+        # Ensure a usable Chrome exists *before* uc runs. Otherwise uc 3.5.5
+        # assigns options.binary_location = None and modern selenium raises
+        # "Binary Location Must be a String". Downloads Chrome for Testing on
+        # Render's native runtime where no system Chrome is present.
+        chrome_binary, chromedriver_binary = ensure_chrome()
+        if not chrome_binary:
+            raise RuntimeError(
+                "No Chrome/Chromium binary available. Run build.sh, set CHROME_PATH, "
+                "or leave AUTO_INSTALL_CHROME enabled so Chrome can be downloaded."
+            )
 
-            # Try to detect installed Chrome major version and pass to uc so it downloads matching driver
-            version_main = detect_chrome_major_version()
+        try:
+            log.info("Initializing Chrome with undetected_chromedriver...")
+            chrome_options = create_chrome_options()
+            # Always pass an explicit string path so uc never assigns None.
+            chrome_options.binary_location = chrome_binary
+            log.info(f"Chrome binary location: {chrome_binary}")
+
+            # Detect the Chrome major version (including our resolved binary).
+            version_main = detect_chrome_major_version([chrome_binary])
             if version_main:
                 log.info(f"Detected Chrome major version: {version_main}; passing version_main to uc.Chrome")
             else:
                 log.info("Could not detect Chrome major version; letting uc auto-detect")
 
-            self.driver = uc.Chrome(
-                options=chrome_options,
-                use_subprocess=True,  # Helps with process management in containers
-                version_main=version_main
-            )
+            uc_kwargs = {
+                "options": chrome_options,
+                "use_subprocess": True,  # Helps with process management in containers
+                "version_main": version_main,
+            }
+            if chromedriver_binary:
+                uc_kwargs["driver_executable_path"] = chromedriver_binary
+                log.info(f"Using ChromeDriver: {chromedriver_binary}")
+
+            self.driver = uc.Chrome(**uc_kwargs)
             log.info("WebDriver initialized successfully")
             log.info(f"Chrome version: {self.driver.capabilities.get('browserVersion', 'unknown')}")
         except Exception as e:
@@ -177,9 +339,12 @@ class TelegramAutomation:
                 log.info("Using webdriver_manager to get matching ChromeDriver...")
                 # Create a FRESH ChromeOptions object for the fallback attempt
                 chrome_options = create_chrome_options()
+                # Always pass an explicit Chrome path so uc never assigns None.
+                if chrome_binary:
+                    chrome_options.binary_location = chrome_binary
                 # If we detected major version, request matching driver from webdriver_manager
                 try:
-                    version_main = detect_chrome_major_version()
+                    version_main = detect_chrome_major_version([chrome_binary])
                 except Exception:
                     version_main = None
                 if version_main:
@@ -967,6 +1132,13 @@ def _queue_processor():
 def run_server():
     port = int(os.environ.get('PORT', 8765))
     log_startup_banner(log)
+    existing_chrome = find_chrome_binary()
+    if existing_chrome:
+        log.info(f"Chrome binary detected: {existing_chrome}")
+    else:
+        log.info(f"Chrome binary not found; will auto-install to {CHROME_INSTALL_DIR} "
+                 f"(AUTO_INSTALL_CHROME={'on' if AUTO_INSTALL_CHROME else 'off'})")
+    _log_browser_lib_status()
     server = ThreadedHTTPServer(('0.0.0.0', port), TelegramHTTPHandler)
     log.info(f"HTTP server started on 0.0.0.0:{port} (threaded)")
     # start session cleaner
