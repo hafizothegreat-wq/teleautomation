@@ -90,6 +90,31 @@ CHROME_APT_PACKAGES = (
     'libatspi2.0-0 libexpat1 libglib2.0-0 libuuid1'
 ).split()
 
+# Chrome for Testing can crash with SIGTRAP (exit -5) under --headless=new in
+# some locked-down containers; the documented upstream workaround is to run
+# real google-chrome-stable instead. We can provision that too (no root, same
+# .deb extractor). Disable with USE_GOOGLE_CHROME=0.
+GOOGLE_CHROME_DEB_URL = os.environ.get(
+    'GOOGLE_CHROME_DEB_URL',
+    'https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb',
+)
+USE_GOOGLE_CHROME = os.environ.get('USE_GOOGLE_CHROME', '1').strip().lower() not in ('0', 'false', 'no', 'off')
+
+#: Flags that let Chrome survive in locked-down containers (also used by the
+#: startup preflight). ``CHROME_EXTRA_ARGS`` (space separated) is appended, e.g.
+#: CHROME_EXTRA_ARGS="--single-process --no-zygote".
+CONTAINER_CHROME_ARGS = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--disable-software-rasterizer',
+    '--disable-breakpad',
+    '--disable-crash-reporter',
+    '--disable-features=AudioServiceOutOfProcess,Translate',
+]
+CHROME_EXTRA_ARGS = os.environ.get('CHROME_EXTRA_ARGS', '').split()
+
 _chrome_lock = threading.Lock()
 _chrome_cache = None  # (chrome_path, chromedriver_path) once resolved
 
@@ -101,6 +126,7 @@ def _chrome_candidates():
     if env_path:
         candidates.append(env_path)
     candidates.append(os.path.join(CHROME_INSTALL_DIR, 'chrome-linux64', 'chrome'))
+    candidates.append(os.path.join(CHROME_INSTALL_DIR, 'google-chrome', 'opt', 'google', 'chrome', 'chrome'))
     for name in ('google-chrome-stable', 'google-chrome', 'chromium-browser', 'chromium', 'chrome'):
         found = shutil.which(name)
         if found:
@@ -209,8 +235,8 @@ def _chrome_preflight(chrome_path, timeout=60):
         scratch = tempfile.mkdtemp(prefix="chrome-preflight-")
     except Exception:
         scratch = None
-    args = [chrome_path, '--headless=new', '--no-sandbox', '--disable-gpu',
-            '--disable-dev-shm-usage', '--no-first-run', '--dump-dom', 'about:blank']
+    args = [chrome_path, '--headless=new', *CONTAINER_CHROME_ARGS, *CHROME_EXTRA_ARGS,
+            '--no-first-run', '--dump-dom', 'about:blank']
     if scratch:
         args.insert(1, f'--user-data-dir={scratch}')
     try:
@@ -223,13 +249,19 @@ def _chrome_preflight(chrome_path, timeout=60):
         if scratch:
             shutil.rmtree(scratch, ignore_errors=True)
     err = (proc.stderr or '').strip()
+    lines = [ln.strip() for ln in err.splitlines() if ln.strip()]
     if proc.returncode == 0:
         return True, "chrome started successfully"
+    # Log Chrome's own reason verbatim; the interesting line is usually a
+    # [FATAL:...] near the end (SIGTRAP comes right after a failed CHECK).
+    for ln in lines[-25:]:
+        log.error(f"chrome stderr | {ln}")
     if 'error while loading shared libraries' in err:
         lib = err.split('error while loading shared libraries:')[-1]
         return False, f"missing shared library -> {lib.split(':')[0].strip()}"
-    last = err.splitlines()[-1] if err else 'unknown error'
-    return False, f"chrome exited {proc.returncode}: {last}"
+    fatal = next((ln for ln in reversed(lines) if 'FATAL' in ln or 'Check failed' in ln), None)
+    reason = fatal or (lines[-1] if lines else 'unknown error')
+    return False, f"chrome exited {proc.returncode}: {reason[:400]}"
 
 
 def _debian_package_map(etch='bookworm', arch='amd64'):
@@ -311,6 +343,51 @@ def _extract_deb(deb_path, dest_dir):
     except Exception as e:
         log.debug(f"Extract {deb_path} failed: {e}")
     return False
+
+
+def install_google_chrome():
+    """Download + unpack real google-chrome-stable without root.
+
+    Chrome for Testing crashes with SIGTRAP under --headless=new in some
+    containers; running real Google Chrome is the upstream workaround. The .deb
+    is extracted with the same pure-Python reader used for the libraries.
+    """
+    target = os.path.join(CHROME_INSTALL_DIR, 'google-chrome')
+    chrome = os.path.join(target, 'opt', 'google', 'chrome', 'chrome')
+    if os.path.isfile(chrome):
+        return chrome
+    deb = os.path.join(CHROME_INSTALL_DIR, 'google-chrome-stable.deb')
+    try:
+        log.info("Downloading google-chrome-stable (.deb)...")
+        os.makedirs(CHROME_INSTALL_DIR, exist_ok=True)
+        urllib.request.urlretrieve(GOOGLE_CHROME_DEB_URL, deb)
+    except Exception as e:
+        log.warning(f"Could not download Google Chrome: {e}")
+        return None
+    os.makedirs(target, exist_ok=True)
+    ok = _extract_deb(deb, target)
+    if not ok:
+        dpkg = shutil.which('dpkg-deb')
+        if dpkg:
+            try:
+                r = subprocess.run([dpkg, '-x', deb, target],
+                                   capture_output=True, text=True, timeout=180)
+                ok = r.returncode == 0
+            except Exception:
+                ok = False
+    try:
+        os.remove(deb)
+    except Exception:
+        pass
+    if ok and os.path.isfile(chrome):
+        try:
+            os.chmod(chrome, 0o755)
+        except Exception:
+            pass
+        log.info(f"Google Chrome ready at {chrome}")
+        return chrome
+    log.warning("Google Chrome download/unpack failed")
+    return None
 
 
 def install_chrome_libs():
@@ -456,6 +533,19 @@ def ensure_chrome():
             chrome, driver = install_chrome_for_testing()
         if chrome:
             _ensure_chrome_libs(chrome)
+            # Chrome for Testing can abort (SIGTRAP, exit -5) with --headless=new
+            # in some locked-down containers; if it will not start, fall back to
+            # real Google Chrome (the documented upstream workaround).
+            if USE_GOOGLE_CHROME and not _chrome_preflight(chrome)[0]:
+                gc = install_google_chrome()
+                if gc:
+                    _ensure_chrome_libs(gc)
+                    if _chrome_preflight(gc)[0]:
+                        log.info("Chrome for Testing could not start; using real Google Chrome")
+                        chrome = gc
+                        # Its version may differ from the bundled Chrome-for-Testing
+                        # driver, so let uc/webdriver-manager fetch a matching one.
+                        driver = None
             log.info(f"Using Chrome binary: {chrome}" + (f" | driver: {driver}" if driver else ""))
         else:
             log.error("No Chrome/Chromium binary available (set CHROME_PATH or leave AUTO_INSTALL_CHROME enabled)")
@@ -519,10 +609,8 @@ class TelegramAutomation:
                 opts.add_argument('--headless=new')  # Use new headless mode for better compatibility
             else:
                 log.info("HEADLESS env set to false; running Chrome in headful mode")
-            opts.add_argument('--disable-gpu')
-            opts.add_argument('--no-sandbox')
-            opts.add_argument('--disable-dev-shm-usage')
-            opts.add_argument('--disable-software-rasterizer')  # Helps with rendering issues in containers
+            for arg in (*CONTAINER_CHROME_ARGS, *CHROME_EXTRA_ARGS):
+                opts.add_argument(arg)
             # NOTE: do *not* hard-code --remote-debugging-port here. uc derives its
             # own port (options.debugger_address) and appends the switch itself;
             # a duplicate switch makes chromedriver connect where Chrome is not
