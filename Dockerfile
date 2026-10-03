@@ -49,5 +49,11 @@ COPY . .
 # Expose the port (Render will override with $PORT)
 EXPOSE 8765
 
+# Render captures stdout/stderr for its Logs tab. Unbuffered output makes log
+# lines appear live (otherwise they are flushed in blocks); LOG_LEVEL controls
+# verbosity (DEBUG|INFO|WARNING|ERROR, default INFO).
+ENV PYTHONUNBUFFERED=1
+ENV LOG_LEVEL=INFO
+
 # Run the app
 CMD ["python", "telegram_headless.py"]

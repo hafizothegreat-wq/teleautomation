@@ -9,11 +9,16 @@ sleep 2
 # Set the DISPLAY environment variable to use the virtual display
 export DISPLAY=:99
 
-echo "[SCRIPT] Virtual display started on $DISPLAY"
-echo "[SCRIPT] Starting Python application..."
+# Render captures stdout/stderr; unbuffered output keeps the log stream live.
+# LOG_LEVEL (DEBUG|INFO|WARNING|ERROR) controls logging verbosity.
+export PYTHONUNBUFFERED=1
+export LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
-# Run the Python script
-python telegram_headless.py
+echo "[SCRIPT] Virtual display started on $DISPLAY"
+echo "[SCRIPT] Starting Python application (LOG_LEVEL=$LOG_LEVEL)..."
+
+# Run the Python script (unbuffered so Render shows logs in real time)
+python -u telegram_headless.py
 
 # Cleanup: Kill Xvfb when done
 echo "[SCRIPT] Killing virtual display..."
