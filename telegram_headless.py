@@ -24,6 +24,11 @@ import shutil
 import re
 import signal
 import zipfile
+import glob
+import io
+import gzip
+import tarfile
+import tempfile
 import urllib.request
 
 from render_logging import setup_logging, log_startup_banner
@@ -69,6 +74,21 @@ ADMIN_PASS = os.environ.get('ADMIN_PASS')
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHROME_INSTALL_DIR = os.environ.get('CHROME_INSTALL_DIR', os.path.join(HERE, '.chrome'))
 AUTO_INSTALL_CHROME = os.environ.get('AUTO_INSTALL_CHROME', '1').strip().lower() not in ('0', 'false', 'no', 'off')
+# Chrome for Testing ships the browser but *not* the system libraries it links
+# against (libnss3, libgbm, libasound2, ...). Render's native runtime is Debian
+# 12 with none of them and no root, so without these Chrome starts and instantly
+# dies ("cannot connect to chrome ... from chrome not reachable"). We unpack the
+# .deb packages without root (apt-get download + dpkg-deb -x), same as build.sh.
+INSTALL_CHROME_LIBS = os.environ.get('INSTALL_CHROME_LIBS', '1').strip().lower() not in ('0', 'false', 'no', 'off')
+LIBS_DIR = os.path.join(CHROME_INSTALL_DIR, 'libs')
+LIBS_MARKER = os.path.join(LIBS_DIR, '.complete')
+CHROME_APT_PACKAGES = (
+    'libnss3 libnspr4 libxss1 libasound2 libdbus-1-3 libatk1.0-0 '
+    'libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 libxkbcommon0 libxcomposite1 '
+    'libxdamage1 libxext6 libxfixes3 libxrandr2 libxrender1 libxtst6 libxi6 '
+    'libxcb1 libx11-6 libxau6 libxdmcp6 libpango-1.0-0 libcairo2 '
+    'libatspi2.0-0 libexpat1 libglib2.0-0 libuuid1'
+).split()
 
 _chrome_lock = threading.Lock()
 _chrome_cache = None  # (chrome_path, chromedriver_path) once resolved
@@ -154,22 +174,267 @@ def install_chrome_for_testing():
         return (None, None)
 
 
+def _libs_complete():
+    return os.path.exists(LIBS_MARKER)
+
+
+def _chrome_missing_libs(chrome_path):
+    """Return the list of sonames `ldd` reports as 'not found' for Chrome."""
+    ldd = shutil.which('ldd')
+    if not ldd or not chrome_path:
+        return []
+    try:
+        out = subprocess.run([ldd, chrome_path], capture_output=True, text=True, timeout=60)
+    except Exception:
+        return []
+    missing = []
+    for line in (out.stdout or '').splitlines():
+        if 'not found' in line:
+            name = line.strip().split(' ')[0]
+            if name:
+                missing.append(name)
+    return missing
+
+
+def _chrome_preflight(chrome_path, timeout=60):
+    """Actually start Chrome headless once to catch launch-time failures.
+
+    Selenium only reports 'cannot connect to chrome' when the browser dies at
+    startup, so this surfaces the real reason (e.g. a missing shared library).
+    """
+    if not chrome_path:
+        return False, "no chrome binary"
+    scratch = None
+    try:
+        scratch = tempfile.mkdtemp(prefix="chrome-preflight-")
+    except Exception:
+        scratch = None
+    args = [chrome_path, '--headless=new', '--no-sandbox', '--disable-gpu',
+            '--disable-dev-shm-usage', '--no-first-run', '--dump-dom', 'about:blank']
+    if scratch:
+        args.insert(1, f'--user-data-dir={scratch}')
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return True, "chrome started (preflight timed out waiting for output)"
+    except Exception as e:
+        return False, f"could not execute chrome: {e}"
+    finally:
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
+    err = (proc.stderr or '').strip()
+    if proc.returncode == 0:
+        return True, "chrome started successfully"
+    if 'error while loading shared libraries' in err:
+        lib = err.split('error while loading shared libraries:')[-1]
+        return False, f"missing shared library -> {lib.split(':')[0].strip()}"
+    last = err.splitlines()[-1] if err else 'unknown error'
+    return False, f"chrome exited {proc.returncode}: {last}"
+
+
+def _debian_package_map(etch='bookworm', arch='amd64'):
+    """Map package name -> Filename from Debian main (no apt needed)."""
+    url = f'http://deb.debian.org/debian/dists/{etch}/main/binary-{arch}/Packages.gz'
+    with urllib.request.urlopen(url, timeout=180) as resp:
+        data = gzip.decompress(resp.read())
+    mapping = {}
+    for block in data.decode('utf-8', 'replace').split('\n\n'):
+        pkg = fn = None
+        for line in block.splitlines():
+            if line.startswith('Package: '):
+                pkg = line[9:].strip()
+            elif line.startswith('Filename: '):
+                fn = line[10:].strip()
+            if pkg and fn:
+                mapping.setdefault(pkg, fn)
+                break
+    return mapping
+
+
+def _download_debian_debs(packages, dest_dir):
+    """Download the given packages' .deb files straight from Debian's mirror."""
+    try:
+        mapping = _debian_package_map()
+    except Exception as e:
+        log.warning(f"Could not fetch Debian package index: {e}")
+        return 0
+    got = 0
+    for pkg in packages:
+        fn = mapping.get(pkg)
+        if not fn:
+            log.debug(f"Debian index has no package named {pkg}")
+            continue
+        dest = os.path.join(dest_dir, os.path.basename(fn))
+        if os.path.exists(dest):
+            got += 1
+            continue
+        try:
+            urllib.request.urlretrieve(f'http://deb.debian.org/debian/{fn}', dest)
+            got += 1
+        except Exception as e:
+            log.debug(f"Download {pkg} failed: {e}")
+    return got
+
+
+def _extract_deb(deb_path, dest_dir):
+    """Extract a .deb (an `ar` archive holding data.tar.*) using pure Python."""
+    try:
+        with open(deb_path, 'rb') as fh:
+            if fh.read(8) != b'!<arch>\n':
+                return False
+            while True:
+                header = fh.read(60)
+                if len(header) < 60:
+                    return False
+                name = header[0:16].decode('utf-8', 'replace').strip()
+                try:
+                    size = int(header[48:58].decode('utf-8', 'replace').strip())
+                except ValueError:
+                    return False
+                payload = fh.read(size)
+                if size % 2 == 1:
+                    fh.read(1)
+                if not name.startswith('data.tar'):
+                    continue
+                if name.endswith('.zst'):
+                    return False  # python stdlib has no zstd reader
+                mode = 'r:'
+                for suffix, m in (('.xz', 'r:xz'), ('.gz', 'r:gz'), ('.bz2', 'r:bz2')):
+                    if name.endswith(suffix):
+                        mode = m
+                with tarfile.open(fileobj=io.BytesIO(payload), mode=mode) as tf:
+                    try:
+                        tf.extractall(dest_dir, filter='data')
+                    except TypeError:  # Python < 3.12 has no filter kwarg
+                        tf.extractall(dest_dir)
+                return True
+    except Exception as e:
+        log.debug(f"Extract {deb_path} failed: {e}")
+    return False
+
+
+def install_chrome_libs():
+    """Download + unpack Chrome's system libraries *without root*.
+
+    Two unprivileged strategies, in order:
+      1. `apt-get download` (uses the local apt; writable state/cache dirs)
+      2. plain HTTP download of the required .deb files from deb.debian.org
+
+    Extraction likewise tries `dpkg-deb -x` and falls back to a pure-Python
+    `ar`+`tar` reader. Everything lands in LIBS_DIR, which _prepend_bundled_libs()
+    adds to LD_LIBRARY_PATH. This is what lets Chrome run on Render's native
+    runtime (Debian, no root, packages absent). Deploy the Dockerfile to skip it.
+    """
+    if _libs_complete():
+        return True
+    if not INSTALL_CHROME_LIBS:
+        log.info("INSTALL_CHROME_LIBS disabled; skipping runtime library bootstrap")
+        return False
+    apt = shutil.which('apt-get')
+    dpkg = shutil.which('dpkg-deb')
+    os.makedirs(LIBS_DIR, exist_ok=True)
+    debs_dir = os.path.join(CHROME_INSTALL_DIR, 'debs')
+    os.makedirs(debs_dir, exist_ok=True)
+    log.info(f"Fetching {len(CHROME_APT_PACKAGES)} Chrome system library package(s) "
+             "(first run only)...")
+
+    # Strategy 1: apt-get download (fast; needs local apt lists)
+    downloaded = 0
+    if apt:
+        apt_state = os.path.join(CHROME_INSTALL_DIR, 'apt')
+        lists_dir = os.path.join(apt_state, 'lists')
+        cache_dir = os.path.join(apt_state, 'cache')
+        os.makedirs(lists_dir, exist_ok=True)
+        os.makedirs(cache_dir, exist_ok=True)
+        apt_opts = ['-o', f'Dir::State::lists={lists_dir}', '-o', f'Dir::Cache={cache_dir}']
+        try:
+            subprocess.run([apt, *apt_opts, 'update'], capture_output=True, text=True, timeout=300)
+        except Exception as e:
+            log.warning(f"apt-get update failed (continuing): {e}")
+        for pkg in CHROME_APT_PACKAGES:
+            for name in (pkg, f'{pkg}t64'):
+                try:
+                    r = subprocess.run([apt, *apt_opts, 'download', name],
+                                       cwd=debs_dir, capture_output=True, text=True, timeout=180)
+                except Exception:
+                    continue
+                if r.returncode == 0:
+                    downloaded += 1
+                    break
+
+    # Strategy 2: download the .deb files directly from Debian (no apt required)
+    if not glob.glob(os.path.join(debs_dir, '*.deb')):
+        log.info("apt-get unavailable or produced nothing; downloading .deb files "
+                 "from deb.debian.org directly")
+        downloaded = _download_debian_debs(CHROME_APT_PACKAGES, debs_dir)
+
+    unpacked = 0
+    for deb in sorted(glob.glob(os.path.join(debs_dir, '*.deb'))):
+        done = False
+        if dpkg:
+            try:
+                r = subprocess.run([dpkg, '-x', deb, LIBS_DIR],
+                                   capture_output=True, text=True, timeout=120)
+                done = r.returncode == 0
+            except Exception:
+                done = False
+        if not done:
+            done = _extract_deb(deb, LIBS_DIR)
+        if done:
+            unpacked += 1
+
+    if unpacked:
+        try:
+            with open(LIBS_MARKER, 'w') as fh:
+                fh.write(f"{unpacked}\n")
+        except Exception:
+            pass
+        log.info(f"Unpacked {unpacked} of {downloaded} downloaded library package(s) into {LIBS_DIR}")
+        return True
+
+    log.warning("Could not unpack Chrome system libraries (no .deb downloaded). "
+                "Deploy with the provided Dockerfile for a self-contained runtime.")
+    return False
+
+
+def _ensure_chrome_libs(chrome):
+    """Make sure Chrome can actually launch (system libs present & resolvable)."""
+    missing = _chrome_missing_libs(chrome)
+    if missing and not _libs_complete():
+        log.warning(f"Chrome is missing shared libraries: {', '.join(sorted(set(missing)))}")
+        install_chrome_libs()
+    _prepend_bundled_libs()
+    still = _chrome_missing_libs(chrome)
+    if still:
+        log.error("Chrome still missing shared libraries after bootstrap: "
+                  f"{', '.join(sorted(set(still)))}. Deploy with the provided Dockerfile "
+                  "(it apt-installs these) for a working runtime.")
+    else:
+        log.info("Chrome shared libraries resolved")
+    ok, detail = _chrome_preflight(chrome)
+    if ok:
+        log.info(f"Chrome preflight OK: {detail}")
+    else:
+        log.error(f"Chrome preflight FAILED: {detail}")
+
+
 def ensure_chrome():
     """Return (chrome_path, chromedriver_path), installing Chrome if needed.
 
     Cached so concurrent callers reuse the same result and download only once.
+    Also guarantees Chrome's *shared libraries* are available before Chrome runs.
     """
     global _chrome_cache
     with _chrome_lock:
         if _chrome_cache is not None:
             return _chrome_cache
-        _prepend_bundled_libs()
         chrome = find_chrome_binary()
         bundled_driver = os.path.join(CHROME_INSTALL_DIR, 'chromedriver-linux64', 'chromedriver')
         driver = bundled_driver if (os.path.isfile(bundled_driver) and os.access(bundled_driver, os.X_OK)) else None
         if not chrome and AUTO_INSTALL_CHROME:
             chrome, driver = install_chrome_for_testing()
         if chrome:
+            _ensure_chrome_libs(chrome)
             log.info(f"Using Chrome binary: {chrome}" + (f" | driver: {driver}" if driver else ""))
         else:
             log.error("No Chrome/Chromium binary available (set CHROME_PATH or leave AUTO_INSTALL_CHROME enabled)")
@@ -177,34 +442,18 @@ def ensure_chrome():
         return _chrome_cache
 
 
-def _log_browser_lib_status():
-    """Best-effort check that Chrome's shared libraries are present.
-
-    Chrome for Testing does not bundle libnss3/libgbm/... . They come from the
-    base image (the Dockerfile) or from build.sh, which unpacks the .deb files
-    into CHROME_INSTALL_DIR/libs and extends LD_LIBRARY_PATH.
-    """
-    key_libs = ('nss3', 'nspr4', 'gbm', 'xkbcommon', 'asound', 'atk-1.0', 'cups')
+def _warm_up_browser():
+    """Resolve/install Chrome (+ its system libraries) in the background at
+    startup, so the first user request is fast and any provisioning problem is
+    visible in the deploy logs immediately rather than on the first login."""
     try:
-        import ctypes.util
-    except Exception:
-        return
-    missing = []
-    for lib in key_libs:
-        try:
-            if ctypes.util.find_library(lib) is None:
-                missing.append(lib)
-        except Exception:
-            pass
-    if missing:
-        log.warning(
-            "Some Chrome shared libraries may be missing: %s. "
-            "Use the Dockerfile, or set the Render build command to "
-            "'pip install -r requirements.txt && bash build.sh' so they are unpacked.",
-            ", ".join(missing),
-        )
-    else:
-        log.info("Chrome shared libraries look present")
+        chrome, driver = ensure_chrome()
+        if chrome:
+            log.info(f"Browser warm-up complete (chrome={chrome}, driver={driver})")
+        else:
+            log.warning("Browser warm-up finished without a Chrome binary")
+    except Exception as e:
+        log.error(f"Browser warm-up failed: {e}")
 
 
 # Firestore initialization (unchanged)
@@ -253,7 +502,10 @@ class TelegramAutomation:
             opts.add_argument('--no-sandbox')
             opts.add_argument('--disable-dev-shm-usage')
             opts.add_argument('--disable-software-rasterizer')  # Helps with rendering issues in containers
-            opts.add_argument('--remote-debugging-port=9222')  # For debugging if needed
+            # NOTE: do *not* hard-code --remote-debugging-port here. uc derives its
+            # own port (options.debugger_address) and appends the switch itself;
+            # a duplicate switch makes chromedriver connect where Chrome is not
+            # listening -> "cannot connect to chrome at 127.0.0.1:<port>".
             opts.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
             return opts
         
@@ -334,8 +586,6 @@ class TelegramAutomation:
             try:
                 # Fallback: try to use webdriver-manager to get correct version
                 from webdriver_manager.chrome import ChromeDriverManager
-                from selenium.webdriver.chrome.service import Service
-                
                 log.info("Using webdriver_manager to get matching ChromeDriver...")
                 # Create a FRESH ChromeOptions object for the fallback attempt
                 chrome_options = create_chrome_options()
@@ -348,12 +598,19 @@ class TelegramAutomation:
                 except Exception:
                     version_main = None
                 if version_main:
-                    service = Service(ChromeDriverManager(version=str(version_main)).install())
+                    try:
+                        # webdriver-manager >= 4 renamed `version` -> `driver_version`
+                        driver_path = ChromeDriverManager(driver_version=str(version_main)).install()
+                    except TypeError:
+                        driver_path = ChromeDriverManager(version=str(version_main)).install()
                 else:
-                    service = Service(ChromeDriverManager().install())
+                    driver_path = ChromeDriverManager().install()
+                # uc.Chrome builds its own ChromiumService and ignores a `service=`
+                # kwarg, so hand it the driver via driver_executable_path instead.
                 self.driver = uc.Chrome(
                     options=chrome_options,
-                    service=service,
+                    driver_executable_path=driver_path,
+                    version_main=version_main,
                     use_subprocess=True
                 )
                 log.info("WebDriver initialized successfully with webdriver_manager")
@@ -1138,7 +1395,6 @@ def run_server():
     else:
         log.info(f"Chrome binary not found; will auto-install to {CHROME_INSTALL_DIR} "
                  f"(AUTO_INSTALL_CHROME={'on' if AUTO_INSTALL_CHROME else 'off'})")
-    _log_browser_lib_status()
     server = ThreadedHTTPServer(('0.0.0.0', port), TelegramHTTPHandler)
     log.info(f"HTTP server started on 0.0.0.0:{port} (threaded)")
     # start session cleaner
@@ -1149,6 +1405,14 @@ def run_server():
     processor = threading.Thread(target=_queue_processor, daemon=True)
     processor.start()
     log.info("Queue processor thread started (single active automation)")
+
+    # Warm up Chrome (download browser + unpack system libraries) in the
+    # background so the first user request is fast and provisioning problems
+    # surface in the deploy logs right away. Disable with WARMUP_BROWSER=0.
+    if os.environ.get('WARMUP_BROWSER', '1').strip().lower() not in ('0', 'false', 'no', 'off'):
+        warm = threading.Thread(target=_warm_up_browser, daemon=True, name='_browser_warmup')
+        warm.start()
+        log.info("Browser warm-up thread started (WARMUP_BROWSER=0 to disable)")
 
     # Render (and most PaaS platforms) send SIGTERM when a service is stopped or
     # redeployed. Turn it into the same graceful-shutdown path as Ctrl+C so open
