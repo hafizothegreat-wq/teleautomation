@@ -397,21 +397,42 @@ def install_chrome_libs():
     return False
 
 
+def _chrome_diagnostics(chrome):
+    """Dump everything relevant when Chrome/WebDriver cannot start."""
+    try:
+        log.error("---- Chrome diagnostics ----")
+        log.error(f"chrome binary     : {chrome}")
+        log.error(f"exists / execable : {os.path.isfile(chrome) if chrome else False} / "
+                  f"{os.access(chrome, os.X_OK) if chrome else False}")
+        log.error(f"LD_LIBRARY_PATH   : {os.environ.get('LD_LIBRARY_PATH', '(unset)')}")
+        libs = glob.glob(os.path.join(LIBS_DIR, '**', '*.so*'), recursive=True)
+        log.error(f"bundled libs       : {len(libs)} file(s) under {LIBS_DIR}")
+        missing = _chrome_missing_libs(chrome)
+        log.error(f"ldd missing        : {', '.join(sorted(set(missing))) if missing else '(none)'}")
+        ok, detail = _chrome_preflight(chrome)
+        log.error(f"headless launch    : {'OK' if ok else 'FAILED'} - {detail}")
+        log.error("---------------------------")
+    except Exception as e:
+        log.error(f"diagnostics failed: {e}")
+
+
 def _ensure_chrome_libs(chrome):
-    """Make sure Chrome can actually launch (system libs present & resolvable)."""
-    missing = _chrome_missing_libs(chrome)
-    if missing and not _libs_complete():
-        log.warning(f"Chrome is missing shared libraries: {', '.join(sorted(set(missing)))}")
-        install_chrome_libs()
+    """Make sure Chrome can actually launch (system libs present & resolvable).
+
+    Driven by an actual Chrome launch rather than `ldd` (which may be missing or
+    misleading in minimal images), so the library bootstrap runs whenever Chrome
+    cannot start -- then it retries the launch.
+    """
     _prepend_bundled_libs()
-    still = _chrome_missing_libs(chrome)
-    if still:
-        log.error("Chrome still missing shared libraries after bootstrap: "
-                  f"{', '.join(sorted(set(still)))}. Deploy with the provided Dockerfile "
-                  "(it apt-installs these) for a working runtime.")
-    else:
-        log.info("Chrome shared libraries resolved")
     ok, detail = _chrome_preflight(chrome)
+    if not ok and not _libs_complete() and INSTALL_CHROME_LIBS:
+        missing = _chrome_missing_libs(chrome)
+        if missing:
+            log.warning(f"Chrome is missing shared libraries: {', '.join(sorted(set(missing)))}")
+        log.warning(f"Chrome failed to start ({detail}); installing missing system libraries")
+        install_chrome_libs()
+        _prepend_bundled_libs()
+        ok, detail = _chrome_preflight(chrome)
     if ok:
         log.info(f"Chrome preflight OK: {detail}")
     else:
@@ -582,6 +603,7 @@ class TelegramAutomation:
             log.info(f"Chrome version: {self.driver.capabilities.get('browserVersion', 'unknown')}")
         except Exception as e:
             log.error(f"Failed to initialize WebDriver: {e}")
+            _chrome_diagnostics(chrome_binary)
             log.info("Attempting with webdriver_manager fallback...")
             try:
                 # Fallback: try to use webdriver-manager to get correct version
@@ -617,7 +639,27 @@ class TelegramAutomation:
                 log.info(f"Chrome version: {self.driver.capabilities.get('browserVersion', 'unknown')}")
             except Exception as e2:
                 log.error(f"Failed with webdriver_manager fallback: {e2}")
-                raise
+                log.info("Attempting with plain Selenium/ChromeDriver (non-undetected) fallback...")
+                try:
+                    from selenium.webdriver.chrome.service import Service
+                    driver_exe = chromedriver_binary
+                    if not driver_exe:
+                        try:
+                            from webdriver_manager.chrome import ChromeDriverManager
+                            driver_exe = ChromeDriverManager().install()
+                        except Exception:
+                            driver_exe = None
+                    plain = Options()
+                    plain.binary_location = chrome_binary
+                    for arg in ('--headless=new', '--disable-gpu', '--no-sandbox',
+                                '--disable-dev-shm-usage', '--disable-software-rasterizer'):
+                        plain.add_argument(arg)
+                    self.driver = webdriver.Chrome(service=Service(driver_exe), options=plain)
+                    log.info("WebDriver initialized with plain Selenium (ChromeDriver)")
+                    log.info(f"Chrome version: {self.driver.capabilities.get('browserVersion', 'unknown')}")
+                except Exception as e3:
+                    log.error(f"Failed with plain Selenium fallback: {e3}")
+                    raise
     # ...existing code...
     def login_with_phone(self, country_code, phone_number):
         """Perform Telegram login with phone number"""
