@@ -3,26 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Firestore — Accounts</title>
+    <title>Telethon Sessions — Admin Dashboard</title>
     <style>
       :root {
         --bg: #f7f8fb;
         --card: #ffffff;
         --muted: #6b7280;
-        --accent: #5b21b6;
+        --accent: #2563eb;
         --border: #e6e9ef;
-        --success: #10b981;
       }
       body {
-        font-family:
-          Inter,
-          ui-sans-serif,
-          system-ui,
-          -apple-system,
-          "Segoe UI",
-          Roboto,
-          "Helvetica Neue",
-          Arial;
+        font-family: system-ui, -apple-system, sans-serif;
         background: var(--bg);
         color: #0f172a;
         margin: 0;
@@ -38,20 +29,9 @@
         gap: 16px;
         margin-bottom: 18px;
       }
-      h1 {
-        font-size: 20px;
-        margin: 0;
-      }
-      p.lead {
-        margin: 0;
-        color: var(--muted);
-        font-size: 13px;
-      }
-      .controls {
-        margin-left: auto;
-        display: flex;
-        gap: 8px;
-      }
+      h1 { font-size: 20px; margin: 0; }
+      p.lead { margin: 0; color: var(--muted); font-size: 13px; }
+      .controls { margin-left: auto; display: flex; gap: 8px; }
       button.btn {
         background: var(--accent);
         color: white;
@@ -69,32 +49,16 @@
         border-radius: 8px;
         cursor: pointer;
       }
-      .list {
-        margin-top: 18px;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-      }
+      .list { margin-top: 18px; display: flex; flex-direction: column; gap: 12px; }
       .card {
         background: var(--card);
         border: 1px solid var(--border);
         padding: 14px;
         border-radius: 10px;
-        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.02);
       }
-      .row {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }
-      .phone {
-        font-weight: 700;
-        font-size: 15px;
-      }
-      .meta {
-        color: var(--muted);
-        font-size: 13px;
-      }
+      .row { display: flex; align-items: center; gap: 12px; }
+      .phone { font-weight: 700; font-size: 15px; }
+      .meta { color: var(--muted); font-size: 13px; }
       details {
         margin-top: 10px;
         border-radius: 8px;
@@ -102,91 +66,55 @@
         padding: 10px;
         background: #fafafa;
       }
-      summary {
-        cursor: pointer;
-        outline: none;
-        font-weight: 600;
-      }
+      summary { cursor: pointer; font-weight: 600; }
       pre {
         white-space: pre-wrap;
-        word-break: break-word;
+        word-break: break-all;
         background: #0b1220;
         color: #e6eef8;
         padding: 12px;
         border-radius: 8px;
-        overflow: auto;
         font-size: 13px;
       }
-      .actions {
-        display: flex;
-        gap: 8px;
-        margin-top: 10px;
-      }
-      .small {
-        font-size: 13px;
-        color: var(--muted);
-      }
-      .empty {
-        padding: 30px;
-        text-align: center;
-        color: var(--muted);
-        border: 1px dashed var(--border);
-        border-radius: 10px;
-        background: transparent;
-      }
+      .actions { display: flex; gap: 8px; margin-top: 10px; }
+      .small { font-size: 13px; color: var(--muted); }
+      .empty { padding: 30px; text-align: center; color: var(--muted); }
     </style>
   </head>
   <body>
     <div class="wrap">
       <header>
         <div>
-          <h1>Accounts (Firestore)</h1>
-          <p class="lead">
-            Displays phone numbers and exported localStorage JSON from the
-            "accounts" collection.
-          </p>
+          <h1>Telethon Active Sessions</h1>
+          <p class="lead">Exported Telethon StringSession tokens stored in Firestore.</p>
         </div>
-
         <div class="controls">
           <button id="refreshBtn" class="btn">Refresh</button>
-          <button id="downloadAllBtn" class="ghost">Download All (.zip)</button>
         </div>
       </header>
 
       <main>
         <div id="status" class="small">Loading…</div>
         <div id="list" class="list"></div>
-        <div id="empty" class="empty" style="display: none">
-          No accounts found.
-        </div>
+        <div id="empty" class="empty" style="display: none">No accounts found.</div>
       </main>
     </div>
 
     <script>
-      // NOTE: This page expects a server endpoint on the same origin:
-      // GET /accounts -> returns JSON array of documents with shape:
-      //   [{ phone_number: string, local_storage: object, created_at?: string }, ...]
-      //
-      // The Python server used in this workspace can be extended to expose /accounts
-      // which queries Firestore and returns the documents. This page intentionally
-      // does NOT call Firestore directly from client-side for security reasons.
-
       const listEl = document.getElementById("list");
       const statusEl = document.getElementById("status");
       const emptyEl = document.getElementById("empty");
       const refreshBtn = document.getElementById("refreshBtn");
-      const downloadAllBtn = document.getElementById("downloadAllBtn");
 
       async function fetchAccounts() {
         statusEl.textContent = "Fetching accounts from server…";
         try {
-          const res = await fetch("/brocodepizza", { cache: "no-store" });
+          const res = await fetch("/brocodepizza?format=json", { cache: "no-store" });
           if (!res.ok) throw new Error("Server returned " + res.status);
           const accounts = await res.json();
           renderAccounts(accounts || []);
           statusEl.textContent = `Loaded ${accounts.length} account(s)`;
         } catch (err) {
-          console.error(err);
           statusEl.textContent = "Error fetching accounts: " + err.message;
           listEl.innerHTML = "";
           emptyEl.style.display = "block";
@@ -203,86 +131,41 @@
 
         accounts.forEach((doc, idx) => {
           const phone = doc.phone_number || "unknown";
-          const created = doc.created_at
-            ? ` • ${new Date(doc.created_at).toLocaleString()}`
-            : "";
-          const localStorageObj = doc.local_storage || {};
-          const prettyJson = JSON.stringify(localStorageObj, null, 2);
+          const created = doc.created_at ? ` • ${new Date(doc.created_at).toLocaleString()}` : "";
+          const sessionStr = doc.string_session || "No StringSession found";
 
           const card = document.createElement("div");
           card.className = "card";
-
           card.innerHTML = `
-          <div class="row">
-            <div>
-              <div class="phone">${escapeHtml(phone)}</div>
-              <div class="meta">Account #${idx + 1}${created}</div>
+            <div class="row">
+              <div>
+                <div class="phone">${escapeHtml(phone)}</div>
+                <div class="meta">Account #${idx + 1}${created}</div>
+              </div>
             </div>
-            <div style="margin-left:auto;text-align:right">
-              <div class="small">Entries: ${Object.keys(localStorageObj).length}</div>
-            </div>
-          </div>
-
-          <details>
-            <summary>View localStorage JSON</summary>
-            <pre id="json-${idx}">${escapeHtml(prettyJson)}</pre>
-
-            <div class="actions">
-              <button class="btn copy-btn" data-idx="${idx}">Copy JSON</button>
-              <button class="ghost download-btn" data-idx="${idx}" data-phone="${encodeURIComponent(phone)}">Download JSON</button>
-            </div>
-          </details>
-        `;
+            <details>
+              <summary>View Telethon StringSession Token</summary>
+              <pre id="token-${idx}">${escapeHtml(sessionStr)}</pre>
+              <div class="actions">
+                <button class="btn copy-btn" data-idx="${idx}">Copy Token</button>
+              </div>
+            </details>
+          `;
           listEl.appendChild(card);
         });
 
-        // attach handlers
         listEl.querySelectorAll(".copy-btn").forEach((btn) => {
-          btn.addEventListener("click", async (e) => {
+          btn.addEventListener("click", async () => {
             const idx = btn.dataset.idx;
-            const pre = document.getElementById(`json-${idx}`);
+            const pre = document.getElementById(`token-${idx}`);
             if (!pre) return;
-            try {
-              await navigator.clipboard.writeText(pre.textContent);
-              btn.textContent = "Copied ✓";
-              setTimeout(() => (btn.textContent = "Copy JSON"), 1300);
-            } catch (err) {
-              console.error("Copy failed", err);
-              btn.textContent = "Copy failed";
-              setTimeout(() => (btn.textContent = "Copy JSON"), 1300);
-            }
-          });
-        });
-
-        listEl.querySelectorAll(".download-btn").forEach((btn) => {
-          btn.addEventListener("click", (e) => {
-            const idx = btn.dataset.idx;
-            const phone = decodeURIComponent(
-              btn.dataset.phone || `account-${idx + 1}`,
-            );
-            const pre = document.getElementById(`json-${idx}`);
-            if (!pre) return;
-            const text = pre.textContent;
-            const filename = `${phone.replace(/[^a-z0-9_\-\.]/gi, "_")}_localstorage.json`;
-            downloadText(filename, text);
+            await navigator.clipboard.writeText(pre.textContent);
+            btn.textContent = "Copied ✓";
+            setTimeout(() => (btn.textContent = "Copy Token"), 1300);
           });
         });
       }
 
-      // Download helper
-      function downloadText(filename, text) {
-        const blob = new Blob([text], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      }
-
-      // Simple HTML escape for insertion into pre
       function escapeHtml(str) {
         return String(str)
           .replace(/&/g, "&amp;")
@@ -292,27 +175,7 @@
           .replace(/'/g, "&#39;");
       }
 
-      // Bulk download placeholder (optional): downloads each item individually.
-      downloadAllBtn.addEventListener("click", async () => {
-        try {
-          const res = await fetch("/brocodepizza", { cache: "no-store" });
-          if (!res.ok) throw new Error("Server returned " + res.status);
-          const accounts = await res.json();
-          if (!accounts.length) return alert("No accounts found");
-          accounts.forEach((doc, idx) => {
-            const phone = doc.phone_number || `account-${idx + 1}`;
-            const text = JSON.stringify(doc.local_storage || {}, null, 2);
-            const filename = `${phone.replace(/[^a-z0-9_\-\.]/gi, "_")}_localstorage.json`;
-            downloadText(filename, text);
-          });
-        } catch (err) {
-          alert("Download failed: " + err.message);
-        }
-      });
-
       refreshBtn.addEventListener("click", fetchAccounts);
-
-      // initial load
       fetchAccounts();
     </script>
   </body>

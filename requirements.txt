@@ -9,3 +9,4 @@ webdriver-manager
 # from the stdlib in Python 3.12. Installing setuptools restores `import distutils`
 # (via its _distutils shim). We also pin Python to 3.11 in .python-version.
 setuptools
+telethon
